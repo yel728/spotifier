@@ -18,7 +18,7 @@ BarWidget {
   readonly property real openPanelIndicatorHeight: musicTrigger.height
   readonly property var shortcutHelp: [
     { keys: "SPACE", action: "Play / pause" },
-    { keys: "←  →", action: "Seek 5 seconds" },
+    { keys: "←  →", action: "Cycle tabs" },
     { keys: "↑  ↓", action: "Move list cursor" },
     { keys: "ENTER", action: "Open / play selected" },
     { keys: "BACKSPACE", action: "Return to playlists" },
@@ -35,6 +35,7 @@ BarWidget {
   property int tab: 0
   property string query: ""
   property bool showShortcuts: false
+  property bool searchCollectionOpen: false
 
   function close() { popupOpen = false; showShortcuts = false }
   function togglePopup() { popupOpen = !popupOpen }
@@ -42,16 +43,20 @@ BarWidget {
     if (hasTrack && spotifier) spotifier.playPause()
   }
   function toggleShortcutHelp() { showShortcuts = !showShortcuts }
-  function selectTab(index) {
+  function selectTab(index, focusSearch) {
     showShortcuts = false
     tab = index
     if (index === 0 && spotifier) spotifier.refreshPlaylists()
-    if (index === 1) Qt.callLater(function() { searchInput.forceActiveFocus() })
+    if (index === 1 && focusSearch !== false && !searchCollectionOpen)
+      Qt.callLater(function() { searchInput.forceActiveFocus() })
+  }
+  function cycleTab(direction) {
+    selectTab((tab + direction + tabLabels.length) % tabLabels.length, false)
   }
   function activeList() {
     if (showShortcuts) return null
     if (tab === 0) return spotifier && spotifier.selectedPlaylist ? playlistTracksView : playlistsView
-    if (tab === 1) return searchResultsView
+    if (tab === 1) return searchCollectionOpen ? searchCollectionTracksView : searchResultsView
     if (tab === 2 && lyricsView.visible) return lyricsView
     return null
   }
@@ -64,13 +69,37 @@ BarWidget {
       return
     }
     if (view.count <= 0) return
-    if (searchInput.activeFocus) root.forceActiveFocus()
+    if (searchInput.activeFocus) {
+      searchInput.focus = false
+      root.forceActiveFocus()
+    }
     var index = view.keyboardCursorVisible
       ? Math.max(0, Math.min(view.count - 1, view.currentIndex + direction))
       : (direction > 0 ? 0 : view.count - 1)
     view.keyboardCursorVisible = true
     view.currentIndex = index
     view.positionViewAtIndex(index, ListView.Contain)
+  }
+  function openCollection(item, fromSearch) {
+    if (!root.spotifier) return
+    if (fromSearch) {
+      searchCollectionOpen = true
+      root.spotifier.loadSearchCollection(item)
+    } else {
+      root.spotifier.loadPlaylist(item)
+    }
+  }
+  function closeCollection() {
+    searchCollectionOpen = false
+    if (root.spotifier) root.spotifier.closeSearchCollection()
+  }
+  function activateListItem(view, item) {
+    if (!item || !root.spotifier) return
+    if (view === playlistsView || item.type === "playlist" || item.type === "album") {
+      root.openCollection(item, view === searchResultsView)
+      return
+    }
+    if (item.uri) root.spotifier.playUri(item.uri, view.contextUri || String(item.context_uri || ""))
   }
   function activateCurrentListItem() {
     var view = activeList()
@@ -79,13 +108,7 @@ BarWidget {
       view.keyboardCursorVisible = true
       view.currentIndex = Math.max(0, view.currentIndex)
     }
-    var item = view.items[view.currentIndex]
-    if (!item) return
-    if (view === playlistsView || item.type === "playlist") {
-      root.spotifier.loadPlaylist(item)
-      return
-    }
-    if (item.uri) root.spotifier.playUri(item.uri, view.contextUri || String(item.context_uri || ""))
+    root.activateListItem(view, view.items[view.currentIndex])
   }
   function selectedFill(selected) { return selected ? Style.selectedFillFor(root.bar.foreground, Color.accent) : "transparent" }
   function mutedColor() { return Qt.darker(root.bar.foreground, 1.42) }
@@ -127,8 +150,6 @@ BarWidget {
     }
   }
 
-  focus: popupOpen
-  Keys.onEscapePressed: popupOpen = false
 
   Shortcut {
     sequence: "Escape"
@@ -147,15 +168,15 @@ BarWidget {
   Shortcut {
     sequence: "Left"
     context: Qt.ApplicationShortcut
-    enabled: root.popupOpen && root.hasTrack && !searchInput.activeFocus
-    onActivated: if (root.spotifier) root.spotifier.seekBy(-5)
+    enabled: root.popupOpen && !root.showShortcuts && !searchInput.activeFocus
+    onActivated: root.cycleTab(-1)
   }
 
   Shortcut {
     sequence: "Right"
     context: Qt.ApplicationShortcut
-    enabled: root.popupOpen && root.hasTrack && !searchInput.activeFocus
-    onActivated: if (root.spotifier) root.spotifier.seekBy(5)
+    enabled: root.popupOpen && !root.showShortcuts && !searchInput.activeFocus
+    onActivated: root.cycleTab(1)
   }
 
   Shortcut {
@@ -191,8 +212,13 @@ BarWidget {
   Shortcut {
     sequence: "Backspace"
     context: Qt.ApplicationShortcut
-    enabled: root.popupOpen && root.tab === 0 && !root.showShortcuts && root.spotifier && root.spotifier.selectedPlaylist
-    onActivated: root.spotifier.closePlaylist()
+    enabled: root.popupOpen && !root.showShortcuts && root.spotifier
+      && ((root.tab === 0 && root.spotifier.selectedPlaylist)
+        || (root.tab === 1 && root.searchCollectionOpen && root.spotifier.selectedSearchCollection))
+    onActivated: {
+      if (root.tab === 0) root.spotifier.closePlaylist()
+      else root.closeCollection()
+    }
   }
 
   Shortcut {
@@ -269,7 +295,10 @@ BarWidget {
     sequence: "Ctrl+F"
     context: Qt.ApplicationShortcut
     enabled: root.popupOpen
-    onActivated: root.selectTab(1)
+    onActivated: {
+      if (root.searchCollectionOpen) root.closeCollection()
+      root.selectTab(1)
+    }
   }
   visible: true
   implicitHeight: barSize
@@ -359,16 +388,14 @@ BarWidget {
     }
   }
 
-  PopupCard {
+  KeyboardPanel {
     id: popup
     anchorItem: root
     bar: root.bar
     owner: root
     open: root.popupOpen
-    onOpenChanged: {
-      if (open) root.forceActiveFocus()
-      else root.showShortcuts = false
-    }
+    focusTarget: root.tab === 1 && !root.searchCollectionOpen ? searchInput : panel
+    onOpenChanged: if (!open) root.showShortcuts = false
     contentWidth: popup.fittedContentWidth(Style.space(430))
     contentHeight: popup.fittedContentHeight(panel.implicitHeight)
 
@@ -727,42 +754,24 @@ BarWidget {
 
           Row {
             width: parent.width
+            visible: !root.searchCollectionOpen
             height: Style.space(34)
             spacing: Style.space(5)
 
-            BorderSurface {
+            TextField {
+              id: searchInput
               width: parent.width - searchButton.width - Style.space(5)
               height: parent.height
-              radius: Style.space(5)
-              color: Style.normalFillFor(root.bar.foreground, Color.accent)
-              borderSpec: Border.controlSpec("normal", root.bar.foreground, Color.accent)
-
-              Text {
-                anchors.left: parent.left
-                anchors.leftMargin: Style.space(9)
-                anchors.verticalCenter: parent.verticalCenter
-                visible: searchInput.text === ""
-                text: "QUERY // TRACK  ARTIST  ALBUM  PLAYLIST"
-                color: root.mutedColor()
-                font.family: root.bar.fontFamily
-                font.pixelSize: Style.font.caption
-                font.letterSpacing: 0.6
-              }
-
-              TextInput {
-                id: searchInput
-                anchors.fill: parent
-                anchors.leftMargin: Style.space(9)
-                anchors.rightMargin: Style.space(9)
-                verticalAlignment: TextInput.AlignVCenter
-                color: root.bar.foreground
-                selectionColor: Color.accent
-                font.family: "Noto Sans CJK SC"
-                font.pixelSize: Style.font.bodySmall
-                text: root.query
-                onTextChanged: root.query = text
-                onAccepted: if (root.spotifier) root.spotifier.search(text)
-              }
+              foreground: root.bar.foreground
+              accent: Color.accent
+              horizontalPadding: Style.space(9)
+              verticalPadding: 0
+              placeholderText: "QUERY // TRACK  ARTIST  ALBUM  PLAYLIST"
+              font.family: "Noto Sans CJK SC"
+              font.pixelSize: Style.font.bodySmall
+              text: root.query
+              onTextChanged: root.query = text
+              onAccepted: if (root.spotifier) root.spotifier.search(text)
             }
 
             FlatButton { id: searchButton; iconText: "󰍉"; foreground: Color.accent; onClicked: if (root.spotifier) root.spotifier.search(root.query) }
@@ -770,7 +779,7 @@ BarWidget {
 
           Text {
             width: parent.width
-            visible: root.spotifier && (root.spotifier.searchLoading || root.spotifier.searchError !== "")
+            visible: !root.searchCollectionOpen && root.spotifier && (root.spotifier.searchLoading || root.spotifier.searchError !== "")
             text: root.spotifier ? (root.spotifier.searchLoading ? "SCANNING SPOTIFY…" : root.spotifier.searchError) : ""
             color: root.mutedColor()
             font.family: root.bar.fontFamily
@@ -783,8 +792,67 @@ BarWidget {
             property var items: root.spotifier ? root.spotifier.searchResults : []
             property string contextUri: ""
             property bool keyboardCursorVisible: false
+            visible: !root.searchCollectionOpen
             width: parent.width
             height: parent.height - Style.space(39)
+            clip: true
+            spacing: 0
+            model: items.length
+            delegate: trackRow
+          }
+
+          Row {
+            width: parent.width
+            height: Style.space(29)
+            spacing: Style.space(5)
+            visible: root.searchCollectionOpen
+
+            FlatButton {
+              iconText: "󰁍"
+              foreground: root.bar.foreground
+              onClicked: root.closeCollection()
+            }
+
+            Text {
+              width: parent.width - searchCollectionPlay.width - Style.space(38)
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.spotifier && root.spotifier.selectedSearchCollection
+                ? root.spotifier.selectedSearchCollection.name + "  //  " + root.spotifier.searchCollectionTracks.length + " TRACKS"
+                : "COLLECTION"
+              color: root.bar.foreground
+              font.family: "Noto Sans CJK SC"
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: 0.7
+              elide: Text.ElideRight
+            }
+
+            FlatButton {
+              id: searchCollectionPlay
+              iconText: "󰐊"
+              foreground: Color.accent
+              onClicked: if (root.spotifier && root.spotifier.selectedSearchCollection) root.spotifier.playUri(root.spotifier.selectedSearchCollection.uri)
+            }
+          }
+
+          Text {
+            width: parent.width
+            visible: root.searchCollectionOpen && root.spotifier && (root.spotifier.searchCollectionLoading || root.spotifier.searchCollectionError !== "")
+            text: root.spotifier ? (root.spotifier.searchCollectionLoading ? "SYNCING TRACK INDEX…" : root.spotifier.searchCollectionError) : ""
+            color: root.mutedColor()
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+            horizontalAlignment: Text.AlignHCenter
+          }
+
+          ListView {
+            id: searchCollectionTracksView
+            property var items: root.spotifier ? root.spotifier.searchCollectionTracks : []
+            property bool keyboardCursorVisible: false
+            property string contextUri: root.spotifier && root.spotifier.selectedSearchCollection ? root.spotifier.selectedSearchCollection.uri : ""
+            width: parent.width
+            height: parent.height - Style.space(34)
+            visible: root.searchCollectionOpen
             clip: true
             spacing: 0
             model: items.length
@@ -1072,7 +1140,7 @@ BarWidget {
         anchors.fill: parent
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
-        onClicked: if (root.spotifier) root.spotifier.loadPlaylist(modelData)
+        onClicked: root.openCollection(modelData, false)
       }
     }
   }
@@ -1083,6 +1151,7 @@ BarWidget {
     Item {
       required property int index
       readonly property var modelData: ListView.view && ListView.view.items[index] ? ListView.view.items[index] : ({})
+      readonly property var ownerView: ListView.view
       readonly property string contextUri: ListView.view && ListView.view.contextUri ? String(ListView.view.contextUri) : ""
       readonly property string playbackContext: contextUri || String(modelData.context_uri || "")
       readonly property bool isCurrent: !!(root.spotifier && modelData.uri && modelData.uri === root.spotifier.trackUri)
@@ -1139,7 +1208,7 @@ BarWidget {
         anchors.fill: parent
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
-        onClicked: if (root.spotifier && modelData.uri) root.spotifier.playUri(modelData.uri, playbackContext)
+        onClicked: root.activateListItem(ownerView, modelData)
       }
     }
   }

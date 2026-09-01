@@ -10,7 +10,7 @@ from typing import Any
 
 
 from .cache import TTLCache
-from .spotify import SpotifyAPI
+from .spotify import SpotifyAPI, spotify_id
 
 ART_CACHE_PATH = Path.home() / ".cache/spotifier/art.json"
 SPOTIFY_PLAYER_IMAGE_DIR = Path.home() / ".cache/spotify-player/image"
@@ -22,12 +22,12 @@ def best_image(images: list[dict[str, Any]] | None) -> str:
     return str(images[-1].get("url") or images[0].get("url") or "")
 
 
-def playlist_id(uri: str) -> str:
-    if uri.startswith("spotify:playlist:"):
-        return uri.rsplit(":", 1)[-1]
-    if "/playlist/" in uri:
-        return uri.split("/playlist/", 1)[1].split("?", 1)[0].split("/", 1)[0]
-    return uri
+def collection_kind(uri: str) -> str:
+    return "album" if uri.startswith("spotify:album:") or "/album/" in uri else "playlist"
+
+
+def collection_key(uri: str) -> str:
+    return f"{collection_kind(uri)}:{spotify_id(uri)}"
 
 
 class Library:
@@ -70,14 +70,15 @@ class Library:
         return result
 
     def tracks(self, uri: str) -> tuple[list[dict[str, Any]], bool]:
-        item_id = playlist_id(uri)
-        cached = self.playlist_cache.get(item_id)
+        item_id = spotify_id(uri)
+        cache_key = collection_key(uri)
+        cached = self.playlist_cache.get(cache_key)
         if cached is not None:
             items = cached.value
             with self.lock:
                 pending = any(item.get("album_id") in self.art_pending for item in items)
             return [self._public_track(item) for item in items], pending
-        raw = self.spotify.player_playlist(item_id)
+        raw = self.spotify.player_album(item_id) if collection_kind(uri) == "album" else self.spotify.player_playlist(item_id)
         items: list[dict[str, Any]] = []
         missing: dict[str, str] = {}
         for track in raw.get("tracks", []):
@@ -85,8 +86,8 @@ class Library:
                 continue
             album = track.get("album") or {}
             album_id = album.get("id", "")
-            image = self.art_cache.get(album_id, "") or self.art_index.get(album_id[:6], "")
-            track_uri = "spotify:track:" + track.get("id", "")
+            image = best_image(album.get("images")) or self.art_cache.get(album_id, "") or self.art_index.get(album_id[:6], "")
+            track_uri = track.get("uri", "") or "spotify:track:" + track.get("id", "")
             items.append({
                 "type": "track",
                 "name": track.get("name", ""),
@@ -97,14 +98,13 @@ class Library:
             })
             if album_id and not image and album_id not in missing:
                 missing[album_id] = track_uri
-        self.playlist_cache.set(item_id, items, 600.0)
+        self.playlist_cache.set(cache_key, items, 600.0)
         for album_id, track_uri in missing.items():
             self._schedule_art(album_id, track_uri)
         return [self._public_track(item) for item in items], bool(missing)
 
     def cached_tracks(self, uri: str) -> tuple[list[dict[str, Any]], bool]:
-        item_id = playlist_id(uri)
-        cached = self.playlist_cache.get(item_id)
+        cached = self.playlist_cache.get(collection_key(uri))
         if cached is None:
             return [], False
         items = cached.value

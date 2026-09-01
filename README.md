@@ -98,7 +98,7 @@ The service uses `KillMode=control-group`, ensuring daemon restarts cannot leave
 GET  /api/health
 GET  /api/status
 GET  /api/playlists
-GET  /api/playlist_tracks?uri=spotify:playlist:...
+GET  /api/playlist_tracks?uri=spotify:{playlist|album}:...
 GET  /api/search?q=QUERY
 GET  /api/lyrics?track=TITLE&artist=ARTIST&album=ALBUM&duration=SECONDS
 GET  /api/devices

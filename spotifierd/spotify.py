@@ -98,6 +98,24 @@ class SpotifyAPI:
             url = str(page.get("next") or "")
         return {"tracks": tracks}
 
+    def player_album(self, album_id: str) -> dict[str, Any]:
+        album = self.player_request(API + f"/albums/{album_id}")
+        page = album.get("tracks") or {}
+        tracks: list[dict[str, Any]] = []
+        album_data = {
+            "id": album.get("id", album_id),
+            "name": album.get("name", ""),
+            "images": album.get("images") or [],
+            "uri": album.get("uri", f"spotify:album:{album_id}"),
+        }
+        while page:
+            for item in page.get("items", []):
+                if item:
+                    tracks.append({**item, "album": album_data})
+            next_url = str(page.get("next") or "")
+            page = self.player_request(next_url) if next_url else {}
+        return {"tracks": tracks}
+
     def tracks(self, ids: list[str]) -> dict[str, Any]:
         query = urllib.parse.urlencode({"ids": ",".join(ids)})
         return self.request("GET", "/tracks?" + query)

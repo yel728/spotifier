@@ -50,6 +50,12 @@ Item {
   property bool searchLoading: false
   property string searchError: ""
   property string searchRequestKey: ""
+  property var selectedSearchCollection: null
+  property var searchCollectionTracks: []
+  property bool searchCollectionLoading: false
+  property bool searchCollectionArtPending: false
+  property string searchCollectionError: ""
+  property string searchCollectionRequestUri: ""
 
   property var lyricsLines: []
   property string plainLyrics: ""
@@ -238,7 +244,7 @@ Item {
     var uri = playlistRequestUri
     if (!uri) {
       playlistLoading = false
-      playlistError = "Playlist unavailable"
+      playlistError = "Collection unavailable"
       return
     }
     request("GET", "/api/playlist_tracks?uri=" + encodeURIComponent(uri), null, function(data) {
@@ -270,6 +276,50 @@ Item {
     playlistLoading = false
     playlistArtPending = false
     playlistRequestUri = ""
+  }
+
+  function loadSearchCollection(collection) {
+    selectedSearchCollection = collection
+    searchCollectionTracks = []
+    searchCollectionError = ""
+    searchCollectionLoading = true
+    searchCollectionArtPending = false
+    searchCollectionRequestUri = collection && collection.uri ? String(collection.uri) : ""
+    var uri = searchCollectionRequestUri
+    if (!uri) {
+      searchCollectionLoading = false
+      searchCollectionError = "Collection unavailable"
+      return
+    }
+    request("GET", "/api/playlist_tracks?uri=" + encodeURIComponent(uri), null, function(data) {
+      if (root.searchCollectionRequestUri !== uri) return
+      root.searchCollectionLoading = false
+      root.searchCollectionError = root.errorMessage(data)
+      if (!data.error) {
+        root.searchCollectionTracks = data.items || []
+        root.searchCollectionArtPending = !!data.art_pending
+        if (root.searchCollectionTracks.length === 0) root.searchCollectionError = "No tracks found"
+      }
+    })
+  }
+
+  function refreshSearchCollectionArt() {
+    var uri = searchCollectionRequestUri
+    if (!searchCollectionArtPending || !uri) return
+    request("GET", "/api/playlist_tracks?cached=1&uri=" + encodeURIComponent(uri), null, function(data) {
+      if (root.searchCollectionRequestUri !== uri || data.error) return
+      root.searchCollectionTracks = data.items || root.searchCollectionTracks
+      root.searchCollectionArtPending = !!data.art_pending
+    })
+  }
+
+  function closeSearchCollection() {
+    selectedSearchCollection = null
+    searchCollectionTracks = []
+    searchCollectionError = ""
+    searchCollectionLoading = false
+    searchCollectionArtPending = false
+    searchCollectionRequestUri = ""
   }
 
   function search(query) {
@@ -395,6 +445,7 @@ Item {
         root.playlists = []
         root.searchResults = []
         root.closePlaylist()
+        root.closeSearchCollection()
         root.clearPlayback()
       }
       root.refresh()
@@ -413,6 +464,7 @@ Item {
 
   Timer { interval: 1000; running: true; repeat: true; triggeredOnStart: true; onTriggered: root.refresh() }
   Timer { interval: 2000; running: root.playlistArtPending; repeat: true; onTriggered: root.refreshPlaylistArt() }
+  Timer { interval: 2000; running: root.searchCollectionArtPending; repeat: true; onTriggered: root.refreshSearchCollectionArt() }
 
   IpcHandler {
     target: "spotifier"
@@ -433,6 +485,8 @@ Item {
         tracks: root.playlistTracks.length,
         playlistError: root.playlistError,
         searchResults: root.searchResults.length,
+        searchCollection: root.selectedSearchCollection ? root.selectedSearchCollection.name : "",
+        searchCollectionTracks: root.searchCollectionTracks.length,
         searchError: root.searchError,
         lyrics: root.lyricsLines.length,
         lyricsError: root.lyricsError,

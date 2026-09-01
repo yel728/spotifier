@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, Mock, patch
 from threading import Event, Thread
 
 from spotifierd.config import Config
+from spotifierd.library import Library
 from spotifierd.spotify import SpotifyAPI
 
 
@@ -61,6 +62,55 @@ class SpotifyApiTests(unittest.TestCase):
             release_poll.set()
             poll.join(1)
             mutation.join(1)
+
+    def test_player_album_downloads_all_tracks_with_album_metadata(self) -> None:
+        api = SpotifyAPI(Config(), Mock())
+        api.player_request = Mock(side_effect=[
+            {
+                "id": "album-id",
+                "name": "Album",
+                "uri": "spotify:album:album-id",
+                "images": [{"url": "cover"}],
+                "tracks": {
+                    "items": [{"id": "one", "name": "One"}],
+                    "next": "https://api.spotify.com/v1/next-page",
+                },
+            },
+            {"items": [{"id": "two", "name": "Two"}], "next": None},
+        ])
+
+        result = api.player_album("album-id")
+
+        self.assertEqual([track["id"] for track in result["tracks"]], ["one", "two"])
+        self.assertTrue(all(track["album"]["name"] == "Album" for track in result["tracks"]))
+
+    def test_library_loads_album_tracks_as_playable_results(self) -> None:
+        spotify = Mock()
+        spotify.player_album.return_value = {
+            "tracks": [{
+                "id": "track-id",
+                "uri": "spotify:track:track-id",
+                "name": "Track",
+                "artists": [{"name": "Artist"}],
+                "album": {"id": "album-id", "images": [{"url": "cover"}]},
+            }],
+        }
+        library = Library(spotify)
+        try:
+            tracks, pending = library.tracks("spotify:album:album-id")
+        finally:
+            library.close()
+
+        spotify.player_album.assert_called_once_with("album-id")
+        spotify.player_playlist.assert_not_called()
+        self.assertFalse(pending)
+        self.assertEqual(tracks, [{
+            "type": "track",
+            "name": "Track",
+            "subtitle": "Artist",
+            "uri": "spotify:track:track-id",
+            "image": "cover",
+        }])
 
     def test_player_playlist_downloads_and_flattens_all_pages(self) -> None:
         player_oauth = Mock()
