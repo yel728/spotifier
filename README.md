@@ -10,12 +10,12 @@ Omarchy QuickShell plugin
         ▼
 spotifierd user service
   ├── Spotify Web API: playback, search, playlists, and transport commands
-  ├── spotify_player: playlist OAuth bootstrap only
+  ├── spotify_player: ncspot OAuth bootstrap for every Web API request
   ├── librespot: the single local audio device
   └── LRCLIB: synchronized and plain lyrics
 ```
 
-Playback has one authority: Spotify Web API commands targeted to the exact `Spotifier` device ID. `spotify_player` only obtains the playlist-scoped OAuth token; it never starts playback or downloads library data.
+Playback has one authority: Spotify Web API commands targeted to the exact `Spotifier` device ID. `spotify_player` obtains the ncspot OAuth token but never starts playback or downloads library data itself.
 
 ## Cache freshness
 
@@ -59,23 +59,11 @@ Shortcuts are active only while the Spotifier popup is open. Typing shortcuts ar
 - `spotify_player`
 - Spotify Premium
 
-## Spotify app setup
+## Spotify authorization
 
-Create an app in the Spotify Developer Dashboard with this exact redirect URI:
+No Spotify Developer Dashboard application is required. Open the panel and select the Spotify icon; Spotifier uses `spotify_player` to obtain an ncspot OAuth token for playback, search, and library API requests.
 
-```text
-http://127.0.0.1:8765/auth/callback
-```
-
-Create local configuration:
-
-```sh
-mkdir -p ~/.config/spotifier
-cp config.example.json ~/.config/spotifier/config.json
-$EDITOR ~/.config/spotifier/config.json
-```
-
-Set `client_id`. Do not configure a client secret; Spotifier uses OAuth PKCE.
+Spotify labels this authorization as **ncspot**. The token is stored locally in `~/.cache/spotify-player/user_client_token.json` and removed by the panel logout control.
 
 ## Install
 

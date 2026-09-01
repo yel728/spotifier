@@ -8,23 +8,10 @@ from typing import Any
 
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "spotifier"
 CONFIG_PATH = CONFIG_DIR / "config.json"
-TOKEN_PATH = CONFIG_DIR / "token.json"
-
-DEFAULT_SCOPES = [
-    "user-read-playback-state",
-    "user-modify-playback-state",
-    "user-read-currently-playing",
-    "playlist-read-private",
-    "playlist-read-collaborative",
-    "user-library-read",
-    "streaming",
-]
 
 
 @dataclass
 class Config:
-    client_id: str = ""
-    redirect_uri: str = "http://127.0.0.1:8765/auth/callback"
     host: str = "127.0.0.1"
     port: int = 8765
     device_name: str = "Spotifier"
@@ -34,7 +21,6 @@ class Config:
         "--enable-volume-normalisation",
         "--cache", "~/.cache/spotifier/librespot",
     ])
-    scopes: list[str] = field(default_factory=lambda: DEFAULT_SCOPES.copy())
 
 
 def _expand_args(args: list[str]) -> list[str]:

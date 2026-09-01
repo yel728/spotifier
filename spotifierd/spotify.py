@@ -11,7 +11,7 @@ from threading import Lock
 from .cache import TTLCache
 
 from .config import Config
-from .oauth import OAuth, SpotifyPlayerOAuth
+from .oauth import SpotifyPlayerOAuth
 
 API = "https://api.spotify.com/v1"
 
@@ -25,15 +25,9 @@ def spotify_id(uri: str) -> str:
 
 
 class SpotifyAPI:
-    def __init__(
-        self,
-        cfg: Config,
-        oauth: OAuth,
-        player_oauth: SpotifyPlayerOAuth | None = None,
-    ):
+    def __init__(self, cfg: Config, oauth: SpotifyPlayerOAuth | None = None):
         self.cfg = cfg
-        self.oauth = oauth
-        self.player_oauth = player_oauth or SpotifyPlayerOAuth()
+        self.oauth = oauth or SpotifyPlayerOAuth()
         self._playback_cache: TTLCache[str, dict[str, Any] | None] = TTLCache(1)
         self._devices_cache: TTLCache[str, list[dict[str, Any]]] = TTLCache(1)
         self._playback_lock = Lock()
@@ -64,7 +58,7 @@ class SpotifyAPI:
         return self.request("GET", f"/playlists/{playlist_id}/tracks?limit=100")
 
     def player_request(self, url: str) -> dict[str, Any]:
-        token = self.player_oauth.token()
+        token = self.oauth.token()
         if not token:
             raise PermissionError("Playlist login is incomplete. Open /auth/login.")
         request = urllib.request.Request(url)

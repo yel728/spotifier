@@ -3,8 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from spotifierd.config import Config
-from spotifierd.oauth import OAuth, SpotifyPlayerOAuth
+from spotifierd.oauth import SpotifyPlayerOAuth
 
 
 class SpotifyPlayerOAuthTests(unittest.TestCase):
@@ -36,20 +35,24 @@ class SpotifyPlayerOAuthTests(unittest.TestCase):
 
             popen.assert_not_called()
 
-    def test_logout_removes_both_oauth_tokens(self) -> None:
+    def test_valid_token_is_available_for_all_api_requests(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            primary_token = root / "token.json"
-            playlist_token = root / "user_client_token.json"
-            primary_token.write_text("{}")
-            playlist_token.write_text("{}")
+            token = Path(directory) / "user_client_token.json"
+            token.write_text(
+                '{"access_token":"token","refresh_token":"refresh",'
+                '"expires_at":"2099-01-01T00:00:00Z"}'
+            )
 
-            with patch("spotifierd.oauth.TOKEN_PATH", primary_token):
-                OAuth(Config()).logout()
-            SpotifyPlayerOAuth(playlist_token).logout()
+            self.assertEqual(SpotifyPlayerOAuth(token).token()["access_token"], "token")
 
-            self.assertFalse(primary_token.exists())
-            self.assertFalse(playlist_token.exists())
+    def test_logout_removes_oauth_token(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            token = Path(directory) / "user_client_token.json"
+            token.write_text("{}")
+
+            SpotifyPlayerOAuth(token).logout()
+
+            self.assertFalse(token.exists())
 
 
 if __name__ == "__main__":

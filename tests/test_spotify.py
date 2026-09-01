@@ -13,12 +13,12 @@ class SpotifyApiTests(unittest.TestCase):
         urlopen.return_value.__enter__.return_value = response
         oauth = Mock()
         oauth.token.return_value = {"access_token": "token"}
-        api = SpotifyAPI(Config(client_id="client"), oauth)
+        api = SpotifyAPI(Config(), oauth)
 
         self.assertIsNone(api.request("PUT", "/me/player/pause"))
 
     def test_playlist_track_playback_preserves_context_for_navigation(self) -> None:
-        api = SpotifyAPI(Config(client_id="client"), Mock())
+        api = SpotifyAPI(Config(), Mock())
         api.local_device_id = Mock(return_value="device")
         api.request = Mock()
 
@@ -35,7 +35,7 @@ class SpotifyApiTests(unittest.TestCase):
 
     def test_player_playlist_downloads_and_flattens_all_pages(self) -> None:
         player_oauth = Mock()
-        api = SpotifyAPI(Config(client_id="client"), Mock(), player_oauth)
+        api = SpotifyAPI(Config(), player_oauth)
         api.player_request = Mock(side_effect=[
             {
                 "items": [{"track": {"id": "one"}}],

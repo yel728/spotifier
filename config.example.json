@@ -1,6 +1,4 @@
 {
-  "client_id": "YOUR_SPOTIFY_CLIENT_ID",
-  "redirect_uri": "http://127.0.0.1:8765/auth/callback",
   "host": "127.0.0.1",
   "port": 8765,
   "device_name": "Spotifier",
@@ -9,14 +7,5 @@
     "--enable-oauth",
     "--enable-volume-normalisation",
     "--cache", "~/.cache/spotifier/librespot"
-  ],
-  "scopes": [
-    "user-read-playback-state",
-    "user-modify-playback-state",
-    "user-read-currently-playing",
-    "playlist-read-private",
-    "playlist-read-collaborative",
-    "user-library-read",
-    "streaming"
   ]
 }

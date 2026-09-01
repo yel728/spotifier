@@ -38,7 +38,7 @@ class TTLCacheTests(unittest.TestCase):
 
 class SpotifyCacheTests(unittest.TestCase):
     def test_playback_cache_is_reused_then_invalidated_by_mutation(self) -> None:
-        api = SpotifyAPI(Config(client_id="client"), Mock())
+        api = SpotifyAPI(Config(), Mock())
         playback = {
             "is_playing": True,
             "progress_ms": 1000,
@@ -63,7 +63,7 @@ class SpotifyCacheTests(unittest.TestCase):
         self.assertEqual(api.request.call_count, 4)
 
     def test_device_lookup_reuses_cached_device_list(self) -> None:
-        api = SpotifyAPI(Config(client_id="client", device_name="Spotifier"), Mock())
+        api = SpotifyAPI(Config(device_name="Spotifier"), Mock())
         api.request = Mock(return_value={"devices": [{"id": "device", "name": "Spotifier"}]})
 
         self.assertEqual(api.local_device_id(), "device")

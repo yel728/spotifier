@@ -9,7 +9,7 @@ from typing import Any
 from .config import Config
 from .library import Library
 from .lyrics import Lyrics
-from .oauth import OAuth, SpotifyPlayerOAuth
+from .oauth import SpotifyPlayerOAuth
 from .playback import LibrespotSupervisor, normalize_playback
 from .spotify import SpotifyAPI
 
@@ -25,9 +25,8 @@ class ApiError(RuntimeError):
 class Application:
     def __init__(self, config: Config):
         self.config = config
-        self.oauth = OAuth(config)
-        self.player_oauth = SpotifyPlayerOAuth()
-        self.spotify = SpotifyAPI(config, self.oauth, self.player_oauth)
+        self.oauth = SpotifyPlayerOAuth()
+        self.spotify = SpotifyAPI(config, self.oauth)
         self.library = Library(self.spotify)
         self.lyrics = Lyrics()
         self.librespot = LibrespotSupervisor(config)
@@ -37,7 +36,7 @@ class Application:
 
     def close(self) -> None:
         self.librespot.stop()
-        self.player_oauth.close()
+        self.oauth.close()
         self.library.close()
 
     def invalidate(self) -> None:
@@ -46,7 +45,7 @@ class Application:
         self.lyrics.invalidate()
 
     def status(self) -> dict[str, Any]:
-        logged_in = self.oauth.token() is not None
+        logged_in = self.oauth.logged_in
         playback: dict[str, Any] | None = None
         playback_error = ""
         if logged_in:
@@ -58,7 +57,7 @@ class Application:
         state.update({
             "online": True,
             "logged_in": logged_in,
-            "library_logged_in": self.player_oauth.logged_in,
+            "library_logged_in": logged_in,
             "device_name": self.config.device_name,
             "streaming_ready": self.librespot.running,
             "streaming_login_url": self.librespot.login_url,
@@ -68,7 +67,6 @@ class Application:
 
     def logout(self) -> None:
         self.oauth.logout()
-        self.player_oauth.logout()
         self.librespot.reset_credentials()
         self.invalidate()
 
@@ -118,30 +116,13 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/api/status":
             return self._json(app.status())
         if url.path == "/auth/login":
-            if not app.oauth.token():
-                if not app.config.client_id or app.config.client_id == "YOUR_SPOTIFY_CLIENT_ID":
-                    raise ApiError("client_id_missing", "Set client_id in ~/.config/spotifier/config.json")
-                location = app.oauth.login_url()
-            else:
-                location = app.player_oauth.login_url()
-                if not location:
-                    location = app.oauth.login_url()
+            location = app.oauth.login_url()
+            if not location:
+                return self._text("Login is already complete. You can close this tab.\n")
             self.send_response(302)
             self.send_header("Location", location)
             self.end_headers()
             return None
-        if url.path == "/auth/callback":
-            code = query.get("code", [""])[0]
-            state = query.get("state", [None])[0]
-            app.oauth.exchange_code(code, state)
-            app.invalidate()
-            location = app.player_oauth.login_url()
-            if location:
-                self.send_response(302)
-                self.send_header("Location", location)
-                self.end_headers()
-                return None
-            return self._text("Login complete. You can close this tab.\n")
         if url.path == "/api/playlists":
             return self._json({"items": app.library.playlists()})
         if url.path == "/api/playlist_tracks":
