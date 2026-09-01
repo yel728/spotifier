@@ -172,6 +172,8 @@ class Handler(BaseHTTPRequestHandler):
             self.app.play_pause()
         elif url.path in ("/api/pause", "/api/stop"):
             spotify.pause()
+        elif url.path == "/api/resume":
+            spotify.resume()
         elif url.path == "/api/next":
             spotify.next()
         elif url.path == "/api/previous":

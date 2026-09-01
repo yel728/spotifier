@@ -42,7 +42,9 @@ Shortcuts are active only while the Spotifier popup is open. Typing shortcuts ar
 | --- | --- |
 | `Space` | Play or pause |
 | `Left` / `Right` | Seek backward or forward 5 seconds |
-| `Up` / `Down` | Scroll the active playlist, track, search, or lyric list |
+| `Up` / `Down` | Move and reveal the active list's keyboard cursor; scroll lyrics |
+| `Enter` | Open the selected playlist or play the selected track |
+| `Backspace` | Return from a track list to the playlist list |
 | `+` / `-` | Raise or lower volume by 5% |
 | `N` / `P` | Next or previous track |
 | `S` | Toggle shuffle |

@@ -207,14 +207,13 @@ class SpotifyAPI:
         return result
 
     def _mutation(self, method: str, path: str, body: dict[str, Any] | None = None) -> None:
+        self._playback_bypass_until = time.monotonic() + 5.0
+        self._playback_cache.clear()
         try:
-            with self._playback_lock:
-                if body is None:
-                    self.request(method, path)
-                else:
-                    self.request(method, path, body)
-                self._playback_cache.clear()
-                self._playback_bypass_until = time.monotonic() + 5.0
+            if body is None:
+                self.request(method, path)
+            else:
+                self.request(method, path, body)
         except Exception:
             self._devices_cache.clear()
             raise

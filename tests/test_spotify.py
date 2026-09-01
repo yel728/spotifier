@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import MagicMock, Mock, patch
+from threading import Event, Thread
 
 from spotifierd.config import Config
 from spotifierd.spotify import SpotifyAPI
@@ -32,6 +33,34 @@ class SpotifyApiTests(unittest.TestCase):
                 "offset": {"uri": "spotify:track:track-id"},
             },
         )
+
+    def test_mutation_does_not_wait_for_inflight_playback_poll(self) -> None:
+        poll_started = Event()
+        release_poll = Event()
+        mutation_sent = Event()
+        api = SpotifyAPI(Config(), Mock())
+        api.local_device_id = Mock(return_value="device")
+
+        def request(method, path, body=None):
+            if path == "/me/player":
+                poll_started.set()
+                release_poll.wait(1)
+                return None
+            mutation_sent.set()
+            return None
+
+        api.request = Mock(side_effect=request)
+        poll = Thread(target=api.playback)
+        mutation = Thread(target=api.pause)
+        poll.start()
+        self.assertTrue(poll_started.wait(0.2))
+        try:
+            mutation.start()
+            self.assertTrue(mutation_sent.wait(0.2))
+        finally:
+            release_poll.set()
+            poll.join(1)
+            mutation.join(1)
 
     def test_player_playlist_downloads_and_flattens_all_pages(self) -> None:
         player_oauth = Mock()

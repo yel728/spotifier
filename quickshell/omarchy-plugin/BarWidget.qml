@@ -19,7 +19,9 @@ BarWidget {
   readonly property var shortcutHelp: [
     { keys: "SPACE", action: "Play / pause" },
     { keys: "←  →", action: "Seek 5 seconds" },
-    { keys: "↑  ↓", action: "Scroll current list" },
+    { keys: "↑  ↓", action: "Move list cursor" },
+    { keys: "ENTER", action: "Open / play selected" },
+    { keys: "BACKSPACE", action: "Return to playlists" },
     { keys: "+  −", action: "Volume ±5%" },
     { keys: "N  P", action: "Next / previous" },
     { keys: "S", action: "Toggle shuffle" },
@@ -56,8 +58,34 @@ BarWidget {
   function scrollActiveList(direction) {
     var view = activeList()
     if (!view) return
-    var maximum = Math.max(0, view.contentHeight - view.height)
-    view.contentY = Math.max(0, Math.min(maximum, view.contentY + direction * Style.space(42)))
+    if (view === lyricsView) {
+      var maximum = Math.max(0, view.contentHeight - view.height)
+      view.contentY = Math.max(0, Math.min(maximum, view.contentY + direction * Style.space(42)))
+      return
+    }
+    if (view.count <= 0) return
+    if (searchInput.activeFocus) root.forceActiveFocus()
+    var index = view.keyboardCursorVisible
+      ? Math.max(0, Math.min(view.count - 1, view.currentIndex + direction))
+      : (direction > 0 ? 0 : view.count - 1)
+    view.keyboardCursorVisible = true
+    view.currentIndex = index
+    view.positionViewAtIndex(index, ListView.Contain)
+  }
+  function activateCurrentListItem() {
+    var view = activeList()
+    if (!view || view === lyricsView || view.count <= 0 || !root.spotifier) return
+    if (!view.keyboardCursorVisible) {
+      view.keyboardCursorVisible = true
+      view.currentIndex = Math.max(0, view.currentIndex)
+    }
+    var item = view.items[view.currentIndex]
+    if (!item) return
+    if (view === playlistsView || item.type === "playlist") {
+      root.spotifier.loadPlaylist(item)
+      return
+    }
+    if (item.uri) root.spotifier.playUri(item.uri, view.contextUri || String(item.context_uri || ""))
   }
   function selectedFill(selected) { return selected ? Style.selectedFillFor(root.bar.foreground, Color.accent) : "transparent" }
   function mutedColor() { return Qt.darker(root.bar.foreground, 1.42) }
@@ -133,7 +161,7 @@ BarWidget {
   Shortcut {
     sequence: "Up"
     context: Qt.ApplicationShortcut
-    autoRepeat: false
+    autoRepeat: true
     enabled: root.popupOpen && !root.showShortcuts
     onActivated: root.scrollActiveList(-1)
   }
@@ -142,8 +170,29 @@ BarWidget {
     sequence: "Down"
     context: Qt.ApplicationShortcut
     enabled: root.popupOpen && !root.showShortcuts
-    autoRepeat: false
+    autoRepeat: true
     onActivated: root.scrollActiveList(1)
+  }
+
+  Shortcut {
+    sequence: "Return"
+    context: Qt.ApplicationShortcut
+    enabled: root.popupOpen && !root.showShortcuts && !searchInput.activeFocus
+    onActivated: root.activateCurrentListItem()
+  }
+
+  Shortcut {
+    sequence: "Enter"
+    context: Qt.ApplicationShortcut
+    enabled: root.popupOpen && !root.showShortcuts && !searchInput.activeFocus
+    onActivated: root.activateCurrentListItem()
+  }
+
+  Shortcut {
+    sequence: "Backspace"
+    context: Qt.ApplicationShortcut
+    enabled: root.popupOpen && root.tab === 0 && !root.showShortcuts && root.spotifier && root.spotifier.selectedPlaylist
+    onActivated: root.spotifier.closePlaylist()
   }
 
   Shortcut {
@@ -646,6 +695,7 @@ BarWidget {
           ListView {
             id: playlistsView
             property var items: root.spotifier ? root.spotifier.playlists : []
+            property bool keyboardCursorVisible: false
             width: parent.width
             height: parent.height - Style.space(34)
             visible: !(root.spotifier && root.spotifier.selectedPlaylist)
@@ -658,6 +708,7 @@ BarWidget {
           ListView {
             id: playlistTracksView
             property var items: root.spotifier ? root.spotifier.playlistTracks : []
+            property bool keyboardCursorVisible: false
             property string contextUri: root.spotifier && root.spotifier.selectedPlaylist ? root.spotifier.selectedPlaylist.uri : ""
             width: parent.width
             height: parent.height - Style.space(34)
@@ -731,6 +782,7 @@ BarWidget {
             id: searchResultsView
             property var items: root.spotifier ? root.spotifier.searchResults : []
             property string contextUri: ""
+            property bool keyboardCursorVisible: false
             width: parent.width
             height: parent.height - Style.space(39)
             clip: true
@@ -853,11 +905,11 @@ BarWidget {
           Column {
             anchors.fill: parent
             anchors.margins: Style.space(3)
-            spacing: Style.space(5)
+            spacing: Style.space(3)
 
             Row {
               width: parent.width
-              height: Style.space(24)
+              height: Style.space(20)
 
               Text {
                 anchors.verticalCenter: parent.verticalCenter
@@ -884,7 +936,7 @@ BarWidget {
                   required property int index
                   readonly property var shortcut: root.shortcutHelp[index]
                   width: (shortcutGrid.width - shortcutGrid.columnSpacing) / 2
-                  height: Style.space(42)
+                  height: Style.space(37)
 
                   Rectangle {
                     anchors.left: parent.left
@@ -955,6 +1007,8 @@ BarWidget {
         hasTrack: root.hasTrack,
         trackOverflow: trackText.needsScroll,
         listOffset: root.activeList() ? Math.round(root.activeList().contentY) : -1,
+        listIndex: root.activeList() && root.activeList() !== lyricsView ? root.activeList().currentIndex : -1,
+        listCursor: !!(root.activeList() && root.activeList() !== lyricsView && root.activeList().keyboardCursorVisible),
         trackOffset: Math.round(trackText.x)
       })
     }
@@ -966,8 +1020,18 @@ BarWidget {
     Item {
       required property int index
       readonly property var modelData: ListView.view && ListView.view.items[index] ? ListView.view.items[index] : ({})
+      readonly property bool keyboardSelected: ListView.isCurrentItem && ListView.view.keyboardCursorVisible
       width: ListView.view ? ListView.view.width : Style.space(410)
       height: Style.space(42)
+
+      Rectangle {
+        anchors.left: parent.left
+        anchors.verticalCenter: parent.verticalCenter
+        width: Style.space(2)
+        height: Style.space(26)
+        color: Color.accent
+        visible: keyboardSelected
+      }
 
 
       Rectangle {
@@ -981,7 +1045,7 @@ BarWidget {
 
       Row {
         anchors.fill: parent
-        anchors.leftMargin: Style.space(3)
+        anchors.leftMargin: keyboardSelected ? Style.space(7) : Style.space(3)
         anchors.rightMargin: Style.space(3)
         spacing: Style.space(7)
 
@@ -1022,8 +1086,10 @@ BarWidget {
       readonly property string contextUri: ListView.view && ListView.view.contextUri ? String(ListView.view.contextUri) : ""
       readonly property string playbackContext: contextUri || String(modelData.context_uri || "")
       readonly property bool isCurrent: !!(root.spotifier && modelData.uri && modelData.uri === root.spotifier.trackUri)
+      readonly property bool keyboardSelected: ListView.isCurrentItem && ListView.view.keyboardCursorVisible
       width: ListView.view ? ListView.view.width : Style.space(410)
       height: Style.space(42)
+
 
 
       Rectangle {
@@ -1041,12 +1107,12 @@ BarWidget {
         width: Style.space(2)
         height: Style.space(26)
         color: Color.accent
-        visible: isCurrent
+        visible: keyboardSelected
       }
 
       Row {
         anchors.fill: parent
-        anchors.leftMargin: isCurrent ? Style.space(7) : Style.space(3)
+        anchors.leftMargin: keyboardSelected ? Style.space(7) : Style.space(3)
         anchors.rightMargin: Style.space(3)
         spacing: Style.space(7)
 

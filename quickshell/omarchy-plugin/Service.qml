@@ -12,6 +12,7 @@ Item {
   property bool streamingReady: false
   property string streamingLoginUrl: ""
   property bool statusPending: false
+  property int emptyPlaybackPolls: 0
 
   property bool hasTrack: false
   property string trackUri: ""
@@ -21,12 +22,18 @@ Item {
   property string artUrl: ""
   property string playbackStatus: "Stopped"
   property real positionSeconds: 0
+  property string playbackStatusTarget: ""
+  property int playbackStatusTargetPolls: 0
   property real lengthSeconds: 0
   property real volume: 0
   property real volumeTarget: -1
   property int volumeTargetPolls: 0
   property bool shuffleEnabled: false
+  property int shuffleTarget: -1
+  property int shuffleTargetPolls: 0
   property string repeatMode: "None"
+  property string repeatModeTarget: ""
+  property int repeatModeTargetPolls: 0
 
   property var playlists: []
   property bool playlistsLoading: false
@@ -50,7 +57,8 @@ Item {
   property string lyricsError: ""
   property string lyricsTrackKey: ""
 
-  property bool actionPending: false
+  property int actionRequests: 0
+  readonly property bool actionPending: actionRequests > 0
   property string actionError: ""
 
   readonly property bool isPlaying: playbackStatus === "Playing"
@@ -98,7 +106,6 @@ Item {
       if (state.error) {
         root.online = false
         root.actionError = root.errorMessage(state, "Spotifier daemon is offline")
-        root.clearPlayback()
         return
       }
       root.online = true
@@ -111,38 +118,90 @@ Item {
       }
       root.streamingReady = !!state.streaming_ready
       root.streamingLoginUrl = state.streaming_login_url || ""
-      root.hasTrack = !!state.has_track
-      root.trackUri = state.uri || ""
-      root.title = state.title || ""
-      root.artist = state.artist || ""
-      root.album = state.album || ""
-      root.artUrl = state.art_url || ""
-      root.playbackStatus = state.status || "Stopped"
-      root.positionSeconds = Number(state.position_s || 0)
-      root.lengthSeconds = Number(state.length_s || 0)
-      var reportedVolume = Math.max(0, Math.min(1, Number(state.volume || 0)))
-      if (root.volumeTarget >= 0) {
-        var volumeSettled = Math.abs(reportedVolume - root.volumeTarget) <= 0.011
-        var volumeFailed = root.actionError !== ""
-        if (volumeSettled || volumeFailed || root.volumeTargetPolls >= 4) {
-          root.volume = reportedVolume
-          root.volumeTarget = -1
-          root.volumeTargetPolls = 0
-        } else {
-          root.volume = root.volumeTarget
-          if (!root.actionPending) root.volumeTargetPolls += 1
-        }
-      } else {
-        root.volume = reportedVolume
+      var preservePlayback = !!state.playback_error
+      if (!preservePlayback && !state.has_track && root.hasTrack) {
+        root.emptyPlaybackPolls += 1
+        preservePlayback = root.emptyPlaybackPolls < 3
+      } else if (state.has_track) {
+        root.emptyPlaybackPolls = 0
       }
-      root.shuffleEnabled = !!state.shuffle
-      root.repeatMode = state.repeat_mode || "None"
-      root.refreshLyrics()
+      if (!preservePlayback) {
+        root.hasTrack = !!state.has_track
+        root.trackUri = state.uri || ""
+        root.title = state.title || ""
+        root.artist = state.artist || ""
+        root.album = state.album || ""
+        root.artUrl = state.art_url || ""
+        var reportedStatus = state.status || "Stopped"
+        if (root.playbackStatusTarget !== "") {
+          if (reportedStatus === root.playbackStatusTarget || root.actionError !== "" || root.playbackStatusTargetPolls >= 5) {
+            root.playbackStatus = reportedStatus
+            root.playbackStatusTarget = ""
+            root.playbackStatusTargetPolls = 0
+          } else {
+            root.playbackStatus = root.playbackStatusTarget
+            root.playbackStatusTargetPolls += 1
+          }
+        } else {
+          root.playbackStatus = reportedStatus
+        }
+        root.positionSeconds = Number(state.position_s || 0)
+        root.lengthSeconds = Number(state.length_s || 0)
+        var reportedVolume = Math.max(0, Math.min(1, Number(state.volume || 0)))
+        if (root.volumeTarget >= 0) {
+          var volumeSettled = Math.abs(reportedVolume - root.volumeTarget) <= 0.011
+          var volumeFailed = root.actionError !== ""
+          if (volumeSettled || volumeFailed || root.volumeTargetPolls >= 4) {
+            root.volume = reportedVolume
+            root.volumeTarget = -1
+            root.volumeTargetPolls = 0
+          } else {
+            root.volume = root.volumeTarget
+            if (!root.actionPending) root.volumeTargetPolls += 1
+          }
+        } else {
+          root.volume = reportedVolume
+        }
+        var reportedShuffle = state.shuffle ? 1 : 0
+        if (root.shuffleTarget >= 0) {
+          if (reportedShuffle === root.shuffleTarget || root.actionError !== "" || root.shuffleTargetPolls >= 5) {
+            root.shuffleEnabled = reportedShuffle === 1
+            root.shuffleTarget = -1
+            root.shuffleTargetPolls = 0
+          } else {
+            root.shuffleEnabled = root.shuffleTarget === 1
+            root.shuffleTargetPolls += 1
+          }
+        } else {
+          root.shuffleEnabled = reportedShuffle === 1
+        }
+        var reportedRepeat = state.repeat_mode || "None"
+        if (root.repeatModeTarget !== "") {
+          if (reportedRepeat === root.repeatModeTarget || root.actionError !== "" || root.repeatModeTargetPolls >= 5) {
+            root.repeatMode = reportedRepeat
+            root.repeatModeTarget = ""
+            root.repeatModeTargetPolls = 0
+          } else {
+            root.repeatMode = root.repeatModeTarget
+            root.repeatModeTargetPolls += 1
+          }
+        } else {
+          root.repeatMode = reportedRepeat
+        }
+        root.refreshLyrics()
+      }
       if (root.loggedIn && root.libraryLoggedIn && root.playlists.length === 0 && !root.playlistsLoading) root.refreshPlaylists()
     })
   }
 
   function clearPlayback() {
+    emptyPlaybackPolls = 0
+    playbackStatusTarget = ""
+    playbackStatusTargetPolls = 0
+    shuffleTarget = -1
+    shuffleTargetPolls = 0
+    repeatModeTarget = ""
+    repeatModeTargetPolls = 0
     hasTrack = false
     trackUri = ""
     title = ""
@@ -264,13 +323,12 @@ Item {
   }
 
   function perform(path, body) {
-    if (actionPending) return
-    actionPending = true
+    actionRequests += 1
     actionError = ""
     request("POST", path, body, function(data) {
-      root.actionPending = false
-      root.actionError = root.errorMessage(data)
-      root.refresh()
+      root.actionRequests = Math.max(0, root.actionRequests - 1)
+      if (data.error) root.actionError = root.errorMessage(data)
+      actionRefresh.start()
     })
   }
 
@@ -279,8 +337,18 @@ Item {
     if (contextUri) body.context_uri = contextUri
     perform("/api/play", body)
   }
-  function playPause() { perform("/api/playpause", null) }
-  function stop() { perform("/api/stop", null) }
+  function playPause() {
+    playbackStatusTarget = isPlaying ? "Paused" : "Playing"
+    playbackStatusTargetPolls = 0
+    playbackStatus = playbackStatusTarget
+    perform(playbackStatusTarget === "Paused" ? "/api/pause" : "/api/resume", null)
+  }
+  function stop() {
+    playbackStatusTarget = "Paused"
+    playbackStatusTargetPolls = 0
+    playbackStatus = playbackStatusTarget
+    perform("/api/stop", null)
+  }
   function next() { perform("/api/next", null) }
   function previous() { perform("/api/previous", null) }
   function seek(fraction) {
@@ -301,18 +369,25 @@ Item {
     perform("/api/volume", { volume: next })
   }
   function adjustVolume(delta) { setVolume(volume + delta) }
-  function toggleShuffle() { perform("/api/shuffle", { enabled: !shuffleEnabled }) }
+  function toggleShuffle() {
+    shuffleTarget = shuffleEnabled ? 0 : 1
+    shuffleTargetPolls = 0
+    shuffleEnabled = shuffleTarget === 1
+    perform("/api/shuffle", { enabled: shuffleEnabled })
+  }
   function cycleRepeat() {
-    var mode = repeatMode === "None" ? "Playlist" : (repeatMode === "Playlist" ? "Track" : "None")
-    perform("/api/repeat", { mode: mode })
+    repeatModeTarget = repeatMode === "None" ? "Playlist" : (repeatMode === "Playlist" ? "Track" : "None")
+    repeatModeTargetPolls = 0
+    repeatMode = repeatModeTarget
+    perform("/api/repeat", { mode: repeatMode })
   }
   function login() { Quickshell.execDetached(["xdg-open", api + "/auth/login"]) }
   function logout() {
     if (actionPending) return
-    actionPending = true
+    actionRequests += 1
     actionError = ""
     request("POST", "/auth/logout", null, function(data) {
-      root.actionPending = false
+      root.actionRequests = Math.max(0, root.actionRequests - 1)
       root.actionError = root.errorMessage(data)
       if (!data.error) {
         root.loggedIn = false
@@ -324,6 +399,16 @@ Item {
       }
       root.refresh()
     })
+  }
+  Timer {
+    id: actionRefresh
+    interval: 100
+    repeat: true
+    onTriggered: {
+      if (root.statusPending) return
+      stop()
+      root.refresh()
+    }
   }
 
   Timer { interval: 1000; running: true; repeat: true; triggeredOnStart: true; onTriggered: root.refresh() }
