@@ -1,0 +1,2 @@
+# Runtime is Python stdlib-only.
+# System packages required: librespot, playerctl, quickshell

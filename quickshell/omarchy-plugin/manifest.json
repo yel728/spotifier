@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "yel728.spotifier",
+  "name": "Spotifier",
+  "version": "0.1.0",
+  "author": "yel728",
+  "description": "Status bar frontend for the local Spotifier daemon",
+  "kinds": ["service", "bar-widget"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Spotifier",
+    "description": "Compact Spotify replacement control with feature popup",
+    "category": "Media",
+    "allowMultiple": false
+  }
+}

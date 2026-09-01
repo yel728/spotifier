@@ -1,0 +1,12 @@
+[project]
+name = "spotifier"
+version = "0.1.0"
+description = "Personal Spotify replacement: local librespot-backed daemon plus QuickShell UI"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+spotifierd = "spotifierd.main:main"
+
+[tool.setuptools]
+packages = ["spotifierd"]

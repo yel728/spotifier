@@ -1,0 +1,19 @@
+[Unit]
+Description=Spotifier Spotify desktop daemon
+After=network-online.target pipewire.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@PROJECT_DIR@
+ExecStart=/usr/bin/python -m spotifierd
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=2
+KillMode=control-group
+TimeoutStopSec=10
+RuntimeDirectory=spotifier
+RuntimeDirectoryMode=0700
+
+[Install]
+WantedBy=default.target
