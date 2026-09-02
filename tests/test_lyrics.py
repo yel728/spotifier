@@ -166,6 +166,52 @@ class LyricsLookupTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.database = Path(self.temporary.name) / "lyrics.sqlite3"
 
+    def test_local_spotify_timed_lines_are_preserved(self) -> None:
+        fetcher = Mock(return_value={
+            "provider": "Musixmatch",
+            "synced": True,
+            "lines": [
+                {"time_ms": 1250, "text": "First"},
+                {"time_ms": 63500, "text": "Second"},
+            ],
+        })
+        lyrics = Lyrics(self.database, spotify_fetcher=fetcher)
+
+        result = lyrics._fetch_spotify("spotify:track:track-id")
+
+        fetcher.assert_called_once_with("spotify:track:track-id")
+        self.assertEqual(
+            result["lines"],
+            [
+                {"time": 1.25, "text": "First"},
+                {"time": 63.5, "text": "Second"},
+            ],
+        )
+        self.assertEqual(
+            result["synced"],
+            "[00:01.250]First\n[01:03.500]Second",
+        )
+        self.assertEqual(result["source"], "spotify")
+
+    def test_local_spotify_unsynced_lines_remain_plain(self) -> None:
+        lyrics = Lyrics(
+            self.database,
+            spotify_fetcher=Mock(return_value={
+                "provider": "Musixmatch",
+                "synced": False,
+                "lines": [
+                    {"time_ms": 0, "text": "First"},
+                    {"time_ms": 0, "text": "Second"},
+                ],
+            }),
+        )
+
+        result = lyrics._fetch_spotify("spotify:track:track-id")
+
+        self.assertEqual(result["plain"], "First\nSecond")
+        self.assertEqual(result["lines"], [])
+        self.assertEqual(result["synced"], "")
+
     def test_lrclib_synced_lyrics_replace_spotify_plain_lyrics_and_persist(self) -> None:
         lyrics = Lyrics(self.database)
         lyrics._fetch_spotify = Mock(return_value={

@@ -199,17 +199,30 @@ class LibrespotSupervisor:
         (Path(self.config.player_cache) / "credentials.json").unlink(missing_ok=True)
         self.start()
 
-    def command(self, value: str) -> None:
+    def request(self, value: str, timeout: float = 1.0) -> str:
         if not self.running:
             raise RuntimeError("Local Spotify player is not running")
+        chunks: list[bytes] = []
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as control:
-            control.settimeout(1)
+            control.settimeout(timeout)
             control.connect(str(CONTROL_SOCKET_PATH))
             control.sendall((value + "\n").encode())
             control.shutdown(socket.SHUT_WR)
-            response = control.recv(4096).decode(errors="replace").strip()
+            while chunk := control.recv(65536):
+                chunks.append(chunk)
+        response = b"".join(chunks).decode(errors="replace").strip()
+        if response.startswith("error "):
+            raise RuntimeError(response.removeprefix("error "))
+        return response
+
+    def command(self, value: str) -> None:
+        response = self.request(value)
         if response != "ok":
-            raise RuntimeError(response.removeprefix("error ") or "Local playback command failed")
+            raise RuntimeError(response or "Local playback command failed")
+
+    def lyrics(self, track_uri: str) -> dict[str, Any]:
+        track_id = track_uri.rsplit(":", 1)[-1]
+        return json.loads(self.request(f"lyrics {track_id}", timeout=10.0))
 
     def _spawn(self) -> None:
         self.login_url = ""

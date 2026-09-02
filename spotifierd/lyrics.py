@@ -5,7 +5,6 @@ import json
 import os
 import re
 import sqlite3
-import subprocess
 import threading
 import time
 import unicodedata
@@ -13,10 +12,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .cache import TTLCache
-from .spotify import spotify_id
 
 LRCLIB_API = "https://lrclib.net/api/get"
 LRCLIB_SEARCH_API = "https://lrclib.net/api/search"
@@ -94,8 +92,13 @@ def best_synced_candidate(
 
 
 class Lyrics:
-    def __init__(self, db_path: Path = LYRICS_DB_PATH):
+    def __init__(
+        self,
+        db_path: Path = LYRICS_DB_PATH,
+        spotify_fetcher: Callable[[str], dict[str, Any]] | None = None,
+    ):
         self.db_path = db_path
+        self.spotify_fetcher = spotify_fetcher
         self.cache: TTLCache[str, dict[str, Any]] = TTLCache(256)
         self.lock = threading.Lock()
         self._initialize_database()
@@ -148,32 +151,33 @@ class Lyrics:
             return spotify
         return lrclib
 
-    @staticmethod
-    def _fetch_spotify(track_uri: str) -> dict[str, Any]:
+    def _fetch_spotify(self, track_uri: str) -> dict[str, Any]:
+        if self.spotify_fetcher is None:
+            return self._empty()
         try:
-            completed = subprocess.run(
-                ["spotify_player", "lyrics", "--id", spotify_id(track_uri)],
-                capture_output=True,
-                text=True,
-                timeout=15,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return Lyrics._empty()
-        if completed.returncode != 0:
-            return Lyrics._empty()
-        output = completed.stdout.strip()
-        if not output or output.endswith("Lyrics not found"):
-            return Lyrics._empty()
-        parts = output.splitlines()
-        raw = "\n".join(parts[2:]).strip() if len(parts) > 2 else ""
-        lines = parse_synced_lyrics(raw)
+            data = self.spotify_fetcher(track_uri)
+        except (OSError, RuntimeError, ValueError):
+            return self._empty()
+        raw_lines = data.get("lines") or []
+        plain = "\n".join(str(line.get("text") or "") for line in raw_lines).strip()
+        synced = bool(data.get("synced"))
+        lines = [
+            {
+                "time": float(line.get("time_ms") or 0) / 1000,
+                "text": str(line.get("text") or ""),
+            }
+            for line in raw_lines
+        ] if synced else []
+        lrc = "\n".join(
+            f"[{int(line['time'] // 60):02d}:{line['time'] % 60:06.3f}]{line['text']}"
+            for line in lines
+        )
         return {
-            "found": bool(raw),
+            "found": bool(plain),
             "instrumental": False,
-            "plain": "\n".join(line["text"] for line in lines) if lines else raw,
+            "plain": plain,
             "lines": lines,
-            "synced": raw if lines else "",
+            "synced": lrc,
             "source": "spotify",
         }
 

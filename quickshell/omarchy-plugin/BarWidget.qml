@@ -420,7 +420,7 @@ BarWidget {
 
   KeyboardPanel {
     id: popup
-    anchorItem: root
+    anchorItem: musicTrigger
     bar: root.bar
     owner: root
     open: root.popupOpen

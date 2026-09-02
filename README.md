@@ -10,8 +10,8 @@ Omarchy QuickShell plugin
         ▼
 spotifierd user service
   ├── Spotify Web API: search and playlists
-  ├── spotifier-player: locally controlled librespot playback
-  ├── spotify_player: ncspot OAuth bootstrap and Spotify lyrics
+  ├── spotifier-player: local playback and timed Spotify lyrics
+  ├── spotify_player: ncspot OAuth bootstrap
   ├── LRCLIB: LRCGET-compatible synchronized lyrics fallback
   └── SQLite: permanent synchronized lyrics cache
 ```
@@ -33,7 +33,7 @@ The daemon uses bounded in-memory TTL caches to reduce Spotify, `spotify_player`
 
 Authentication invalidates every account-derived cache. Device-command failures invalidate the device cache. Bounded LRU eviction prevents searches, playlists, or lyrics from growing memory without limit.
 
-Opening the Lyrics tab checks Spotify first. When Spotify has no lyrics or only unsynchronized lyrics, the daemon tries LRCLIB's duration-sensitive exact lookup, then falls back to a title search. Search candidates must have synchronized lyrics, an exact normalized title, a duration within four seconds, and either a matching artist or an exact album. Artist, album, full artist credit, and nearest duration rank safe matches. The panel identifies the selected source above the lyrics. Every synchronized result is stored permanently in `~/.local/share/spotifier/lyrics.sqlite3`; later requests read it without contacting either provider.
+Opening the Lyrics tab asks the authenticated local `spotifier-player` session for Spotify's native lyric metadata first, preserving its line timestamps without a Web API or CLI request. When Spotify has no lyrics or only unsynchronized lyrics, the daemon tries LRCLIB's duration-sensitive exact lookup, then falls back to a title search. LRCLIB candidates must have synchronized lyrics, an exact normalized title, a duration within four seconds, and either a matching artist or an exact album. Artist, album, full artist credit, and nearest duration rank safe matches. The panel identifies the selected source above the lyrics. Every synchronized result is stored permanently in `~/.local/share/spotifier/lyrics.sqlite3`; later requests read it without contacting either provider.
 
 ## Panel keyboard shortcuts
 

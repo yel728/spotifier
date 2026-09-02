@@ -1,9 +1,10 @@
 use futures_util::StreamExt;
 use librespot::{
     connect::{ConnectConfig, LoadRequest, LoadRequestOptions, PlayingTrack, Spirc},
-    core::{Session, SessionConfig, authentication::Credentials, cache::Cache},
+    core::{Session, SessionConfig, SpotifyId, authentication::Credentials, cache::Cache},
     discovery::Discovery,
     metadata::audio::UniqueFields,
+    metadata::{Lyrics, lyrics::SyncType},
     playback::{
         audio_backend,
         config::{AudioFormat, PlayerConfig},
@@ -53,7 +54,12 @@ fn device_id(name: &str) -> String {
     format!("{:x}", Sha1::digest(name.as_bytes()))
 }
 
-fn start_control_server(path: PathBuf, handle: Arc<Mutex<Option<Spirc>>>) -> std::io::Result<()> {
+fn start_control_server(
+    path: PathBuf,
+    handle: Arc<Mutex<Option<Spirc>>>,
+    session: Session,
+    runtime: tokio::runtime::Handle,
+) -> std::io::Result<()> {
     if path.exists() {
         fs::remove_file(&path)?;
     }
@@ -67,9 +73,9 @@ fn start_control_server(path: PathBuf, handle: Arc<Mutex<Option<Spirc>>>) -> std
             let result = connection
                 .read_to_string(&mut request)
                 .map_err(|error| error.to_string())
-                .and_then(|_| dispatch(&handle, request.trim()));
+                .and_then(|_| dispatch(&handle, &session, &runtime, request.trim()));
             let response = match result {
-                Ok(()) => "ok\n".to_string(),
+                Ok(value) => format!("{value}\n"),
                 Err(error) => format!("error {error}\n"),
             };
             let _ = connection.write_all(response.as_bytes());
@@ -78,9 +84,32 @@ fn start_control_server(path: PathBuf, handle: Arc<Mutex<Option<Spirc>>>) -> std
     Ok(())
 }
 
-fn dispatch(handle: &Arc<Mutex<Option<Spirc>>>, request: &str) -> Result<(), String> {
+fn dispatch(
+    handle: &Arc<Mutex<Option<Spirc>>>,
+    session: &Session,
+    runtime: &tokio::runtime::Handle,
+    request: &str,
+) -> Result<String, String> {
     let mut parts = request.split_whitespace();
     let command = parts.next().ok_or("empty command")?;
+    if command == "lyrics" {
+        let id = SpotifyId::from_base62(parts.next().ok_or("missing track id")?)
+            .map_err(|error| error.to_string())?;
+        let lyrics = runtime
+            .block_on(Lyrics::get(session, &id))
+            .map_err(|error| error.to_string())?;
+        let synced = matches!(lyrics.lyrics.sync_type, SyncType::LineSynced);
+        return Ok(json!({
+            "provider": lyrics.lyrics.provider_display_name,
+            "synced": synced,
+            "lines": lyrics.lyrics.lines.into_iter().map(|line| json!({
+                "time_ms": line.start_time_ms.parse::<u64>().unwrap_or(0),
+                "text": line.words,
+            })).collect::<Vec<_>>(),
+        })
+        .to_string());
+    }
+
     let guard = handle.lock().map_err(|_| "control lock poisoned")?;
     let spirc = guard.as_ref().ok_or("player is not connected")?;
     let result = match command {
@@ -122,7 +151,9 @@ fn dispatch(handle: &Arc<Mutex<Option<Spirc>>>, request: &str) -> Result<(), Str
         "repeat_track" => spirc.repeat_track(parse_bool(parts.next())?),
         _ => return Err(format!("unknown command: {command}")),
     };
-    result.map_err(|error| error.to_string())
+    result
+        .map(|_| "ok".to_string())
+        .map_err(|error| error.to_string())
 }
 
 fn parse<T: std::str::FromStr>(value: Option<&str>, name: &str) -> Result<T, String> {
@@ -302,7 +333,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (spirc, spirc_task) =
         Spirc::new(connect_config, session.clone(), credentials, player, mixer).await?;
     let handle = Arc::new(Mutex::new(Some(spirc)));
-    start_control_server(control_path.clone(), handle.clone())?;
+    start_control_server(
+        control_path.clone(),
+        handle.clone(),
+        session,
+        tokio::runtime::Handle::current(),
+    )?;
     println!("spotifier-player ready: {}", control_path.display());
 
     tokio::pin!(spirc_task);

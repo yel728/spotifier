@@ -46,13 +46,32 @@ class DaemonLifecycleTests(unittest.TestCase):
         daemon.process = Mock()
         daemon.process.poll.return_value = None
         connection = MagicMock()
-        connection.__enter__.return_value.recv.return_value = b"ok\n"
+        connection.__enter__.return_value.recv.side_effect = [b"ok\n", b""]
 
         with patch("spotifierd.playback.socket.socket", return_value=connection):
             daemon.command("pause")
 
         control = connection.__enter__.return_value
         control.sendall.assert_called_once_with(b"pause\n")
+
+    def test_local_lyrics_command_reads_complete_json_response(self) -> None:
+        daemon = LibrespotSupervisor(Config())
+        daemon.process = Mock()
+        daemon.process.poll.return_value = None
+        connection = MagicMock()
+        control = connection.__enter__.return_value
+        control.recv.side_effect = [
+            b'{"synced":true,"lines":[',
+            b'{"time_ms":1250,"text":"Line"}]}',
+            b"",
+        ]
+
+        with patch("spotifierd.playback.socket.socket", return_value=connection):
+            result = daemon.lyrics("spotify:track:track-id")
+
+        control.sendall.assert_called_once_with(b"lyrics track-id\n")
+        self.assertTrue(result["synced"])
+        self.assertEqual(result["lines"], [{"time_ms": 1250, "text": "Line"}])
 
     def test_play_pause_uses_local_player_not_spotify(self) -> None:
         app = Application.__new__(Application)

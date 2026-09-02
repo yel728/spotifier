@@ -28,9 +28,9 @@ class Application:
         self.oauth = SpotifyPlayerOAuth()
         self.spotify = SpotifyAPI(config, self.oauth)
         self.library = Library(self.spotify)
-        self.lyrics = Lyrics()
         self.playback = EventPlaybackState()
         self.librespot = LibrespotSupervisor(config, self.playback.apply)
+        self.lyrics = Lyrics(spotify_fetcher=self.librespot.lyrics)
 
     def start(self) -> None:
         self.librespot.start()
