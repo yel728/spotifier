@@ -16,7 +16,7 @@ spotifierd user service
   └── SQLite: permanent synchronized lyrics cache
 ```
 
-Track loading and every transport command use the local `spotifier-player` control socket. Play, pause, previous, next, seek, volume, shuffle, and repeat therefore bypass Spotify's rate-limited Web API. Playback events return over a local Unix datagram socket; QuickShell keeps one streaming connection to `spotifierd` and never polls Spotify for status.
+Track loading and every transport command use the local `spotifier-player` control socket. Play, pause, previous, next, seek, volume, shuffle, and repeat therefore bypass Spotify's rate-limited Web API. Slow lyric metadata requests run independently from ordered playback commands, and track selections arriving within 200 milliseconds coalesce to the latest selection rather than queueing stale loads. If Spotify cannot load the requested track, the player disconnects before librespot can continue through the context, retries that exact track once without a context, and reports the failure instead of silently playing another track. Playback events return over a local Unix datagram socket; QuickShell keeps one streaming connection to `spotifierd` and never polls Spotify for status.
 
 ## Cache freshness
 

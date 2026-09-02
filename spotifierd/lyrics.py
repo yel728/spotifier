@@ -101,6 +101,8 @@ class Lyrics:
         self.spotify_fetcher = spotify_fetcher
         self.cache: TTLCache[str, dict[str, Any]] = TTLCache(256)
         self.lock = threading.Lock()
+        self.request_lock = threading.Lock()
+        self.request_generation = 0
         self._initialize_database()
 
     def get(
@@ -111,10 +113,16 @@ class Lyrics:
         duration: float,
         track_uri: str = "",
     ) -> dict[str, Any]:
+        with self.request_lock:
+            self.request_generation += 1
+            generation = self.request_generation
         key = track_uri or "\0".join(
             (track.casefold(), artist.casefold(), album.casefold(), str(round(duration)))
         )
         with self.lock:
+            with self.request_lock:
+                if generation != self.request_generation:
+                    return self._public(self._empty())
             cached = self.cache.get(key)
             if cached is not None:
                 return cached.value

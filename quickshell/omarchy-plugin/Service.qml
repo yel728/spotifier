@@ -11,6 +11,7 @@ Item {
   property bool libraryLoggedIn: false
   property bool streamingReady: false
   property string streamingLoginUrl: ""
+  property string playbackError: ""
   property bool statusPending: false
   property int emptyPlaybackPolls: 0
 
@@ -122,6 +123,7 @@ Item {
     }
     root.streamingReady = !!state.streaming_ready
     root.streamingLoginUrl = state.streaming_login_url || ""
+    root.playbackError = state.playback_error || ""
     root.hasTrack = !!state.has_track
     root.trackUri = state.uri || ""
     root.title = state.title || ""
@@ -504,7 +506,8 @@ Item {
         lyrics: root.lyricsLines.length,
         lyricsError: root.lyricsError,
         lyricsSource: root.lyricsSource,
-        actionError: root.actionError
+        actionError: root.actionError,
+        playbackError: root.playbackError
       })
     }
     function loadIndex(index: string): string {

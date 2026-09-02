@@ -17,9 +17,16 @@ class DaemonLifecycleTests(unittest.TestCase):
         daemon.process = process
 
         with tempfile.TemporaryDirectory() as directory:
-            pid_path = Path(directory) / "librespot.pid"
+            runtime = Path(directory)
+            pid_path = runtime / "librespot.pid"
+            event_path = runtime / "events.sock"
+            control_path = runtime / "control.sock"
             pid_path.write_text("1234\n")
-            with patch("spotifierd.playback.LIBRESPOT_PID_PATH", pid_path):
+            with (
+                patch("spotifierd.playback.LIBRESPOT_PID_PATH", pid_path),
+                patch("spotifierd.playback.EVENT_SOCKET_PATH", event_path),
+                patch("spotifierd.playback.CONTROL_SOCKET_PATH", control_path),
+            ):
                 daemon.stop()
                 self.assertFalse(pid_path.exists())
 
@@ -72,6 +79,72 @@ class DaemonLifecycleTests(unittest.TestCase):
         control.sendall.assert_called_once_with(b"lyrics track-id\n")
         self.assertTrue(result["synced"])
         self.assertEqual(result["lines"], [{"time_ms": 1250, "text": "Line"}])
+
+    @patch("spotifierd.playback.threading.Timer")
+    def test_rapid_loads_only_commit_latest_track(self, timer_class) -> None:
+        daemon = LibrespotSupervisor(Config())
+        daemon.process = Mock()
+        daemon.process.poll.return_value = None
+        first_timer = Mock()
+        second_timer = Mock()
+        timer_class.side_effect = [first_timer, second_timer]
+
+        daemon.load("spotify:track:first", "spotify:playlist:context")
+        daemon.load("spotify:track:second", "spotify:playlist:context")
+
+        first_timer.cancel.assert_called_once_with()
+        first_callback = timer_class.call_args_list[0].args[1]
+        first_args = timer_class.call_args_list[0].kwargs["args"]
+        second_callback = timer_class.call_args_list[1].args[1]
+        second_args = timer_class.call_args_list[1].kwargs["args"]
+        with patch.object(daemon, "command") as command:
+            first_callback(*first_args)
+            second_callback(*second_args)
+
+        command.assert_called_once_with(
+            "load spotify:track:second spotify:playlist:context"
+        )
+
+    @patch("spotifierd.playback.threading.Timer")
+    def test_unavailable_requested_track_retries_once_without_context(self, timer_class) -> None:
+        daemon = LibrespotSupervisor(Config())
+        daemon.last_load = ("spotify:track:failed", "spotify:playlist:context")
+        daemon.load_generation = 4
+        retry_timer = Mock()
+        timer_class.return_value = retry_timer
+        event = {"PLAYER_EVENT": "unavailable", "TRACK_ID": "failed"}
+
+        daemon._recover_unavailable(event)
+        daemon._recover_unavailable(event)
+
+        timer_class.assert_called_once_with(
+            2.0,
+            daemon._commit_load,
+            args=(4, "spotify:track:failed", ""),
+        )
+        retry_timer.start.assert_called_once_with()
+        self.assertEqual(daemon.load_retries, 1)
+
+    def test_unavailable_track_error_survives_stop_and_clears_on_success(self) -> None:
+        state = EventPlaybackState()
+        state.apply({
+            "PLAYER_EVENT": "unavailable",
+            "TRACK_ID": "failed",
+            "ERROR": "Spotify could not load the selected track",
+        })
+        state.apply({"PLAYER_EVENT": "stopped", "TRACK_ID": "failed"})
+
+        self.assertEqual(
+            state.snapshot()["playback_error"],
+            "Spotify could not load the selected track",
+        )
+
+        state.apply({
+            "PLAYER_EVENT": "track_changed",
+            "TRACK_ID": "recovered",
+            "URI": "spotify:track:recovered",
+        })
+        self.assertEqual(state.snapshot()["playback_error"], "")
 
     def test_play_pause_uses_local_player_not_spotify(self) -> None:
         app = Application.__new__(Application)

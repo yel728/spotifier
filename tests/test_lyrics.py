@@ -1,5 +1,7 @@
 import io
 import tempfile
+import threading
+import time
 import unittest
 import urllib.error
 from pathlib import Path
@@ -211,6 +213,45 @@ class LyricsLookupTests(unittest.TestCase):
         self.assertEqual(result["plain"], "First\nSecond")
         self.assertEqual(result["lines"], [])
         self.assertEqual(result["synced"], "")
+
+    def test_queued_stale_lookups_are_skipped(self) -> None:
+        first_started = threading.Event()
+        release_first = threading.Event()
+        fetched: list[str] = []
+        lyrics = Lyrics(self.database)
+
+        def fetch(track, artist, album, duration, track_uri):
+            fetched.append(track)
+            if track == "First":
+                first_started.set()
+                release_first.wait(2)
+            return Lyrics._empty()
+
+        lyrics._fetch = Mock(side_effect=fetch)
+        threads = [
+            threading.Thread(
+                target=lyrics.get,
+                args=(name, "Artist", "Album", 180, f"spotify:track:{name}"),
+            )
+            for name in ("First", "Second", "Third")
+        ]
+        threads[0].start()
+        self.assertTrue(first_started.wait(1))
+        threads[1].start()
+        deadline = time.monotonic() + 1
+        while lyrics.request_generation < 2 and time.monotonic() < deadline:
+            time.sleep(0.001)
+        self.assertEqual(lyrics.request_generation, 2)
+        threads[2].start()
+        deadline = time.monotonic() + 1
+        while lyrics.request_generation < 3 and time.monotonic() < deadline:
+            time.sleep(0.001)
+        self.assertEqual(lyrics.request_generation, 3)
+        release_first.set()
+        for thread in threads:
+            thread.join(2)
+
+        self.assertEqual(fetched, ["First", "Third"])
 
     def test_lrclib_synced_lyrics_replace_spotify_plain_lyrics_and_persist(self) -> None:
         lyrics = Lyrics(self.database)

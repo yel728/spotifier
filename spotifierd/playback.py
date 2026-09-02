@@ -35,6 +35,7 @@ def normalize_playback(raw: dict[str, Any] | None) -> dict[str, Any]:
             "status": "Stopped",
             "volume": 0.0,
             "shuffle": False,
+            "playback_error": "",
             "repeat_mode": "None",
         }
     item = raw.get("item") or {}
@@ -58,6 +59,7 @@ def normalize_playback(raw: dict[str, Any] | None) -> dict[str, Any]:
         "volume": float((raw.get("device") or {}).get("volume_percent") or 0) / 100,
         "shuffle": bool(raw.get("shuffle_state")),
         "repeat_mode": repeat_mode,
+        "playback_error": "",
     }
 
 class EventPlaybackState:
@@ -66,6 +68,7 @@ class EventPlaybackState:
         self._position_updated = time.monotonic()
         self._version = 0
         self._condition = threading.Condition()
+        self._failed_track = ""
 
     def apply(self, event: dict[str, str]) -> None:
         name = event.get("PLAYER_EVENT", "")
@@ -81,7 +84,9 @@ class EventPlaybackState:
                     "art_url": covers[0] if covers else "",
                     "length_s": self._seconds(event.get("DURATION_MS")),
                     "position_s": 0.0,
+                    "playback_error": "",
                 })
+                self._failed_track = ""
                 self._position_updated = time.monotonic()
             elif name in ("playing", "paused", "seeked", "position_correction"):
                 if not self._state["uri"] and event.get("TRACK_ID"):
@@ -94,8 +99,15 @@ class EventPlaybackState:
                 elif name == "paused":
                     self._state["status"] = "Paused"
                 self._position_updated = time.monotonic()
+            elif name == "unavailable":
+                self._failed_track = event.get("TRACK_ID", "")
+                self._state["status"] = "Paused"
+                self._state["playback_error"] = event.get("ERROR", "Spotify could not load the selected track")
+                self._position_updated = time.monotonic()
             elif name == "stopped":
+                error = self._state.get("playback_error", "") if self._failed_track else ""
                 self._state = normalize_playback(None)
+                self._state["playback_error"] = error
                 self._position_updated = time.monotonic()
             elif name == "volume_changed":
                 volume = self._number(event.get("VOLUME"))
@@ -155,6 +167,11 @@ class LibrespotSupervisor:
         self.monitor_thread: threading.Thread | None = None
         self.event_socket: socket.socket | None = None
         self.event_thread: threading.Thread | None = None
+        self.load_lock = threading.Lock()
+        self.load_generation = 0
+        self.load_timer: threading.Timer | None = None
+        self.last_load: tuple[str, str] | None = None
+        self.load_retries = 0
 
     @property
     def running(self) -> bool:
@@ -174,6 +191,11 @@ class LibrespotSupervisor:
 
     def stop(self) -> None:
         self.stopping.set()
+        with self.load_lock:
+            self.load_generation += 1
+            if self.load_timer is not None:
+                self.load_timer.cancel()
+                self.load_timer = None
         process = self.process
         if process and process.poll() is None:
             process.terminate()
@@ -219,6 +241,35 @@ class LibrespotSupervisor:
         response = self.request(value)
         if response != "ok":
             raise RuntimeError(response or "Local playback command failed")
+
+    def load(self, track_uri: str, context_uri: str = "") -> None:
+        if not self.running:
+            raise RuntimeError("Local Spotify player is not running")
+        with self.load_lock:
+            self.load_generation += 1
+            generation = self.load_generation
+            self.last_load = (track_uri, context_uri)
+            self.load_retries = 0
+            if self.load_timer is not None:
+                self.load_timer.cancel()
+            self.load_timer = threading.Timer(
+                0.2,
+                self._commit_load,
+                args=(generation, track_uri, context_uri),
+            )
+            self.load_timer.daemon = True
+            self.load_timer.start()
+
+    def _commit_load(self, generation: int, track_uri: str, context_uri: str) -> None:
+        with self.load_lock:
+            if generation != self.load_generation:
+                return
+            self.load_timer = None
+        command = " ".join(part for part in ("load", track_uri, context_uri) if part)
+        try:
+            self.command(command)
+        except RuntimeError as error:
+            print(f"player load failed: {error}")
 
     def lyrics(self, track_uri: str) -> dict[str, Any]:
         track_id = track_uri.rsplit(":", 1)[-1]
@@ -273,11 +324,36 @@ class LibrespotSupervisor:
             except OSError:
                 return
             try:
-                event = json.loads(payload)
+                event = {str(key): str(value) for key, value in json.loads(payload).items()}
+                self._recover_unavailable(event)
                 if self.event_callback is not None:
-                    self.event_callback({str(key): str(value) for key, value in event.items()})
+                    self.event_callback(event)
             except (json.JSONDecodeError, TypeError, ValueError) as error:
                 print(f"invalid librespot event: {error}", file=sys.stderr)
+
+    def _recover_unavailable(self, event: dict[str, str]) -> None:
+        if event.get("PLAYER_EVENT") != "unavailable":
+            return
+        failed_uri = f"spotify:track:{event.get('TRACK_ID', '')}"
+        with self.load_lock:
+            if (
+                self.last_load is None
+                or self.last_load[0] != failed_uri
+                or self.load_retries >= 1
+                or self.stopping.is_set()
+            ):
+                return
+            self.load_retries += 1
+            generation = self.load_generation
+            if self.load_timer is not None:
+                self.load_timer.cancel()
+            self.load_timer = threading.Timer(
+                2.0,
+                self._commit_load,
+                args=(generation, failed_uri, ""),
+            )
+            self.load_timer.daemon = True
+            self.load_timer.start()
 
     def _capture_output(self) -> None:
         process = self.process

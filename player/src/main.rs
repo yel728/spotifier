@@ -70,18 +70,36 @@ fn start_control_server(
                 continue;
             };
             let mut request = String::new();
-            let result = connection
-                .read_to_string(&mut request)
-                .map_err(|error| error.to_string())
-                .and_then(|_| dispatch(&handle, &session, &runtime, request.trim()));
-            let response = match result {
-                Ok(value) => format!("{value}\n"),
-                Err(error) => format!("error {error}\n"),
-            };
-            let _ = connection.write_all(response.as_bytes());
+            if let Err(error) = connection.read_to_string(&mut request) {
+                write_control_response(connection, Err(error.to_string()));
+                continue;
+            }
+            if request.trim_start().starts_with("lyrics ") {
+                let handle = handle.clone();
+                let session = session.clone();
+                let runtime = runtime.clone();
+                thread::spawn(move || {
+                    let result = dispatch(&handle, &session, &runtime, request.trim());
+                    write_control_response(connection, result);
+                });
+            } else {
+                let result = dispatch(&handle, &session, &runtime, request.trim());
+                write_control_response(connection, result);
+            }
         }
     });
     Ok(())
+}
+
+fn write_control_response(
+    mut connection: std::os::unix::net::UnixStream,
+    result: Result<String, String>,
+) {
+    let response = match result {
+        Ok(value) => format!("{value}\n"),
+        Err(error) => format!("error {error}\n"),
+    };
+    let _ = connection.write_all(response.as_bytes());
 }
 
 fn dispatch(
@@ -171,12 +189,22 @@ fn parse_bool(value: Option<&str>) -> Result<bool, String> {
     }
 }
 
-fn start_event_relay(mut events: librespot::playback::player::PlayerEventChannel, path: PathBuf) {
+fn start_event_relay(
+    mut events: librespot::playback::player::PlayerEventChannel,
+    path: PathBuf,
+    handle: Arc<Mutex<Option<Spirc>>>,
+) {
     thread::spawn(move || {
         let socket = UnixDatagram::unbound().expect("create event socket");
         while let Some(event) = events.blocking_recv() {
+            let unavailable = matches!(&event, PlayerEvent::Unavailable { .. });
             if let Some(payload) = event_payload(event) {
                 let _ = socket.send_to(payload.to_string().as_bytes(), &path);
+            }
+            if unavailable {
+                if let Some(spirc) = handle.lock().expect("spirc handle poisoned").as_ref() {
+                    let _ = spirc.disconnect(true);
+                }
             }
         }
     });
@@ -236,6 +264,11 @@ fn event_payload(event: PlayerEvent) -> Option<Value> {
             position_ms,
             ..
         } => position_event(&mut data, "position_correction", track_id, position_ms)?,
+        PlayerEvent::Unavailable { track_id, .. } => {
+            put("PLAYER_EVENT", "unavailable".into());
+            put("TRACK_ID", track_id.to_id().ok()?);
+            put("ERROR", "Spotify could not load the selected track".into());
+        }
         PlayerEvent::Stopped { track_id, .. } => {
             put("PLAYER_EVENT", "stopped".into());
             put("TRACK_ID", track_id.to_id().ok()?);
@@ -313,7 +346,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         mixer.get_soft_volume(),
         move || backend(None, AudioFormat::S16),
     );
-    start_event_relay(player.get_player_event_channel(), event_path);
+    let events = player.get_player_event_channel();
 
     let credentials = match cache.credentials() {
         Some(credentials) => credentials,
@@ -333,6 +366,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (spirc, spirc_task) =
         Spirc::new(connect_config, session.clone(), credentials, player, mixer).await?;
     let handle = Arc::new(Mutex::new(Some(spirc)));
+    start_event_relay(events, event_path, handle.clone());
     start_control_server(
         control_path.clone(),
         handle.clone(),

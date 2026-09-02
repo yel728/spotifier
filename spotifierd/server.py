@@ -61,7 +61,6 @@ class Application:
             "device_name": self.config.device_name,
             "streaming_ready": self.librespot.running,
             "streaming_login_url": self.librespot.login_url,
-            "playback_error": "",
         })
         return state
 
@@ -183,9 +182,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError("uri_invalid", "A Spotify URI is required")
             if context_uri and not context_uri.startswith("spotify:"):
                 raise ApiError("context_uri_invalid", "context_uri must be a Spotify URI")
-            app.librespot.command(
-                " ".join(part for part in ("load", uri, context_uri) if part)
-            )
+            app.librespot.load(uri, context_uri)
         elif url.path == "/api/playpause":
             self.app.play_pause()
         elif url.path in ("/api/pause", "/api/stop"):

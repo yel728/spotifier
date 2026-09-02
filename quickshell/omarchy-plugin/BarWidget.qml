@@ -688,8 +688,8 @@ BarWidget {
 
       Text {
         width: parent.width
-        visible: root.spotifier && root.spotifier.actionError !== ""
-        text: root.spotifier ? "ERR // " + root.spotifier.actionError : ""
+        visible: root.spotifier && (root.spotifier.actionError !== "" || root.spotifier.playbackError !== "")
+        text: root.spotifier ? "ERR // " + (root.spotifier.actionError || root.spotifier.playbackError) : ""
         color: Color.accent
         font.family: root.bar.fontFamily
         font.pixelSize: Style.font.caption
