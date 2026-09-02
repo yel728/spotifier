@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from spotifierd.config import Config
-from spotifierd.playback import normalize_playback
+from spotifierd.playback import EventPlaybackState, normalize_playback
 from spotifierd.spotify import SpotifyAPI
 
 
@@ -35,9 +35,40 @@ class PlaybackTests(unittest.TestCase):
         self.assertEqual(state["uri"], "")
         self.assertEqual(state["status"], "Stopped")
 
+    def test_librespot_events_drive_complete_playback_state(self) -> None:
+        playback = EventPlaybackState()
+        playback.apply({
+            "PLAYER_EVENT": "track_changed",
+            "TRACK_ID": "track-id",
+            "URI": "spotify:track:track-id",
+            "NAME": "One More Time",
+            "ARTISTS": "Daft Punk",
+            "ALBUM": "Discovery",
+            "COVERS": "cover-large\ncover-small",
+            "DURATION_MS": "320000",
+        })
+        playback.apply({"PLAYER_EVENT": "playing", "TRACK_ID": "track-id", "POSITION_MS": "12500"})
+        playback.apply({"PLAYER_EVENT": "volume_changed", "VOLUME": "32768"})
+        playback.apply({"PLAYER_EVENT": "shuffle_changed", "SHUFFLE": "true"})
+        playback.apply({"PLAYER_EVENT": "repeat_changed", "REPEAT": "true", "REPEAT_TRACK": "false"})
+
+        state = playback.snapshot()
+
+        self.assertEqual(state["title"], "One More Time")
+        self.assertEqual(state["artist"], "Daft Punk")
+        self.assertEqual(state["art_url"], "cover-large")
+        self.assertEqual(state["status"], "Playing")
+        self.assertGreaterEqual(state["position_s"], 12.5)
+        self.assertAlmostEqual(state["volume"], 32768 / 65535)
+        self.assertTrue(state["shuffle"])
+        self.assertEqual(state["repeat_mode"], "Playlist")
+
+        playback.apply({"PLAYER_EVENT": "stopped", "TRACK_ID": "track-id"})
+        self.assertFalse(playback.snapshot()["has_track"])
+
     def test_pause_targets_only_configured_device(self) -> None:
         api = SpotifyAPI(Config(device_name="Spotifier"), Mock())
-        with patch.object(api, "devices", return_value=[{"id": "device-1", "name": "Spotifier"}]), patch.object(api, "request") as request:
+        with patch.object(api, "_discover_local_device_id", return_value="device-1"), patch.object(api, "request") as request:
             api.pause()
         request.assert_called_once_with("PUT", "/me/player/pause?device_id=device-1")
 

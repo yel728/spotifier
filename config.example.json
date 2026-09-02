@@ -2,10 +2,6 @@
   "host": "127.0.0.1",
   "port": 8765,
   "device_name": "Spotifier",
-  "librespot_args": [
-    "--name", "Spotifier",
-    "--enable-oauth",
-    "--enable-volume-normalisation",
-    "--cache", "~/.cache/spotifier/librespot"
-  ]
+  "librespot_zeroconf_port": 8766,
+  "player_cache": "~/.cache/spotifier/librespot"
 }

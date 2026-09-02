@@ -10,7 +10,7 @@ from .config import Config
 from .library import Library
 from .lyrics import Lyrics
 from .oauth import SpotifyPlayerOAuth
-from .playback import LibrespotSupervisor, normalize_playback
+from .playback import EventPlaybackState, LibrespotSupervisor
 from .spotify import SpotifyAPI
 
 
@@ -29,7 +29,8 @@ class Application:
         self.spotify = SpotifyAPI(config, self.oauth)
         self.library = Library(self.spotify)
         self.lyrics = Lyrics()
-        self.librespot = LibrespotSupervisor(config)
+        self.playback = EventPlaybackState()
+        self.librespot = LibrespotSupervisor(config, self.playback.apply)
 
     def start(self) -> None:
         self.librespot.start()
@@ -45,15 +46,14 @@ class Application:
         self.lyrics.invalidate()
 
     def status(self) -> dict[str, Any]:
+        return self._decorate_status(self.playback.snapshot())
+
+    def wait_status(self, version: int, timeout: float) -> tuple[int, dict[str, Any] | None]:
+        version, state = self.playback.wait(version, timeout)
+        return version, self._decorate_status(state) if state is not None else None
+
+    def _decorate_status(self, state: dict[str, Any]) -> dict[str, Any]:
         logged_in = self.oauth.logged_in
-        playback: dict[str, Any] | None = None
-        playback_error = ""
-        if logged_in:
-            try:
-                playback = self.spotify.playback()
-            except Exception as error:
-                playback_error = str(error)
-        state = normalize_playback(playback)
         state.update({
             "online": True,
             "logged_in": logged_in,
@@ -61,7 +61,7 @@ class Application:
             "device_name": self.config.device_name,
             "streaming_ready": self.librespot.running,
             "streaming_login_url": self.librespot.login_url,
-            "playback_error": playback_error,
+            "playback_error": "",
         })
         return state
 
@@ -71,11 +71,7 @@ class Application:
         self.invalidate()
 
     def play_pause(self) -> None:
-        playback = self.spotify.playback()
-        if playback and playback.get("is_playing"):
-            self.spotify.pause()
-        else:
-            self.spotify.resume()
+        self.librespot.command("play_pause")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -88,6 +84,9 @@ class Handler(BaseHTTPRequestHandler):
         self._send(204, b"", "text/plain")
 
     def do_GET(self) -> None:
+        if urllib.parse.urlparse(self.path).path == "/api/events":
+            self._events()
+            return
         try:
             response = self._route_get()
             if response is not None:
@@ -104,6 +103,22 @@ class Handler(BaseHTTPRequestHandler):
             self._error(error)
         except Exception as error:
             self._error(ApiError("internal_error", str(error), 500))
+
+    def _events(self) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        version = -1
+        try:
+            while True:
+                version, state = self.app.wait_status(version, 25)
+                payload = b"\n" if state is None else json.dumps(state).encode() + b"\n"
+                self.wfile.write(payload)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
     def _route_get(self) -> tuple[int, bytes, str] | None:
         url = urllib.parse.urlparse(self.path)
@@ -149,7 +164,8 @@ class Handler(BaseHTTPRequestHandler):
                 duration = float(query.get("duration", ["0"])[0])
             except ValueError as error:
                 raise ApiError("duration_invalid", "Duration must be a number") from error
-            return self._json(app.lyrics.get(track, artist, album, duration))
+            track_uri = query.get("uri", [""])[0].strip()
+            return self._json(app.lyrics.get(track, artist, album, duration, track_uri))
         if url.path == "/api/devices":
             return self._json({"items": app.spotify.devices()})
         raise ApiError("not_found", "Endpoint not found", 404)
@@ -157,7 +173,7 @@ class Handler(BaseHTTPRequestHandler):
     def _route_post(self) -> tuple[int, bytes, str]:
         url = urllib.parse.urlparse(self.path)
         payload = self._payload()
-        spotify = self.app.spotify
+        app = self.app
         if url.path == "/auth/logout":
             self.app.logout()
         elif url.path == "/api/play":
@@ -167,31 +183,33 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError("uri_invalid", "A Spotify URI is required")
             if context_uri and not context_uri.startswith("spotify:"):
                 raise ApiError("context_uri_invalid", "context_uri must be a Spotify URI")
-            spotify.play_uri(uri, context_uri or None)
+            app.librespot.command(
+                " ".join(part for part in ("load", uri, context_uri) if part)
+            )
         elif url.path == "/api/playpause":
             self.app.play_pause()
         elif url.path in ("/api/pause", "/api/stop"):
-            spotify.pause()
+            app.librespot.command("pause")
         elif url.path == "/api/resume":
-            spotify.resume()
+            app.librespot.command("play")
         elif url.path == "/api/next":
-            spotify.next()
+            app.librespot.command("next")
         elif url.path == "/api/previous":
-            spotify.previous()
+            app.librespot.command("previous")
         elif url.path == "/api/seek":
-            spotify.seek(self._number(payload, "position", minimum=0))
+            app.librespot.command(f"seek {round(self._number(payload, 'position', minimum=0) * 1000)}")
         elif url.path == "/api/volume":
-            spotify.set_volume(self._number(payload, "volume", minimum=0, maximum=1))
+            app.librespot.command(f"volume {round(self._number(payload, 'volume', minimum=0, maximum=1) * 65535)}")
         elif url.path == "/api/shuffle":
             enabled = payload.get("enabled")
             if not isinstance(enabled, bool):
                 raise ApiError("shuffle_invalid", "enabled must be boolean")
-            spotify.set_shuffle(enabled)
+            app.librespot.command(f"shuffle {str(enabled).lower()}")
         elif url.path == "/api/repeat":
             mode = payload.get("mode")
             if mode not in ("None", "Playlist", "Track"):
                 raise ApiError("repeat_invalid", "mode must be None, Playlist, or Track")
-            spotify.set_repeat(mode)
+            app.librespot.command(f"repeat_mode {mode}")
         else:
             raise ApiError("not_found", "Endpoint not found", 404)
         return self._json({"ok": True})

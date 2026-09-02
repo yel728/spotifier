@@ -14,8 +14,10 @@ BarWidget {
   readonly property string trackLine: spotifier ? spotifier.title + (spotifier.artist ? "  ·  " + spotifier.artist : "") : ""
   readonly property var tabLabels: ["LIBRARY", "SEARCH", "LYRICS"]
   readonly property var tabIcons: ["󰲸", "󰍉", "󰊤"]
-  readonly property real openPanelIndicatorWidth: barContent.implicitWidth
-  readonly property real openPanelIndicatorHeight: musicTrigger.height
+  // The bar centers its built-in mark across the whole widget. Suppress it;
+  // musicTrigger paints the mark directly beneath the icon instead.
+  readonly property real openPanelIndicatorWidth: 0.01
+  readonly property real openPanelIndicatorHeight: 0.01
   readonly property var shortcutHelp: [
     { keys: "SPACE", action: "Play / pause" },
     { keys: "←  →", action: "Cycle tabs" },
@@ -37,8 +39,15 @@ BarWidget {
   property bool showShortcuts: false
   property bool searchCollectionOpen: false
 
-  function close() { popupOpen = false; showShortcuts = false }
-  function togglePopup() { popupOpen = !popupOpen }
+  function close() {
+    popupOpen = false
+    showShortcuts = false
+    if (spotifier) spotifier.setLyricsActive(false)
+  }
+  function togglePopup() {
+    popupOpen = !popupOpen
+    if (spotifier) spotifier.setLyricsActive(popupOpen && tab === 2)
+  }
   function toggleTrackPlayback() {
     if (hasTrack && spotifier) spotifier.playPause()
   }
@@ -46,6 +55,7 @@ BarWidget {
   function selectTab(index, focusSearch) {
     showShortcuts = false
     tab = index
+    if (spotifier) spotifier.setLyricsActive(popupOpen && index === 2)
     if (index === 0 && spotifier) spotifier.refreshPlaylists()
     if (index === 1 && focusSearch !== false && !searchCollectionOpen)
       Qt.callLater(function() { searchInput.forceActiveFocus() })
@@ -325,6 +335,26 @@ BarWidget {
         Behavior on color { ColorAnimation { duration: 140 } }
       }
 
+      Rectangle {
+        readonly property int inset: Style.space(2)
+        width: root.bar && root.bar.vertical ? Style.space(2) : Style.space(14)
+        height: root.bar && root.bar.vertical ? Style.space(14) : Style.space(2)
+        x: root.bar && root.bar.vertical
+          ? (root.bar.position === "left" ? parent.width - width - inset : inset)
+          : Math.round((parent.width - width) / 2)
+        y: root.bar && root.bar.vertical
+          ? Math.round((parent.height - height) / 2)
+          : (root.bar && root.bar.position === "top" ? parent.height - height - inset : inset)
+        visible: opacity > 0
+        opacity: root.popupOpen ? 0.9 : 0
+        color: Color.accent
+        radius: Math.min(width, height) / 2
+
+        Behavior on opacity {
+          NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
+        }
+      }
+
       MouseArea {
         anchors.fill: parent
         hoverEnabled: true
@@ -517,9 +547,9 @@ BarWidget {
               spacing: Style.space(3)
 
               FlatButton { enabled: root.hasTrack; iconText: "󰒟"; foreground: root.spotifier && root.spotifier.shuffleEnabled ? Color.accent : root.bar.foreground; onClicked: if (root.spotifier) root.spotifier.toggleShuffle() }
-              FlatButton { enabled: root.hasTrack; iconText: "󰒮"; foreground: root.bar.foreground; onClicked: if (root.spotifier) root.spotifier.previous() }
-              FlatButton { enabled: root.hasTrack; iconText: root.isPlaying ? "󰏤" : "󰐊"; foreground: Color.accent; onClicked: if (root.spotifier) root.spotifier.playPause() }
-              FlatButton { enabled: root.hasTrack; iconText: "󰒭"; foreground: root.bar.foreground; onClicked: if (root.spotifier) root.spotifier.next() }
+              FlatButton { enabled: root.hasTrack && root.spotifier && !root.spotifier.actionPending; iconText: "󰒮"; foreground: root.bar.foreground; onClicked: root.spotifier.previous() }
+              FlatButton { enabled: root.hasTrack && root.spotifier && !root.spotifier.actionPending; iconText: root.isPlaying ? "󰏤" : "󰐊"; foreground: Color.accent; onClicked: root.spotifier.playPause() }
+              FlatButton { enabled: root.hasTrack && root.spotifier && !root.spotifier.actionPending; iconText: "󰒭"; foreground: root.bar.foreground; onClicked: root.spotifier.next() }
               FlatButton { enabled: root.hasTrack; iconText: root.spotifier && root.spotifier.repeatMode === "Track" ? "󰑘" : "󰑖"; foreground: root.spotifier && root.spotifier.repeatMode !== "None" ? Color.accent : root.bar.foreground; onClicked: if (root.spotifier) root.spotifier.cycleRepeat() }
 
               Text { anchors.verticalCenter: parent.verticalCenter; text: "󰕾"; color: root.mutedColor(); font.family: root.bar.fontFamily; font.pixelSize: Style.font.body }
@@ -878,11 +908,25 @@ BarWidget {
             wrapMode: Text.WordWrap
           }
 
+          Text {
+            anchors.left: parent.left
+            anchors.top: parent.top
+            anchors.leftMargin: Style.space(10)
+            anchors.topMargin: Style.space(7)
+            z: 2
+            visible: root.spotifier && root.spotifier.lyricsSource !== "" && (root.spotifier.lyricsLines.length > 0 || root.spotifier.plainLyrics !== "")
+            text: "Lyrics source: " + (root.spotifier ? (root.spotifier.lyricsSource === "lrclib" ? "LRCLIB" : "Spotify") : "")
+            color: root.mutedColor()
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
           ListView {
             id: lyricsView
             property var items: root.spotifier ? root.spotifier.lyricsLines : []
             anchors.fill: parent
             anchors.margins: Style.space(7)
+            anchors.topMargin: Style.space(28)
             visible: items.length > 0
             clip: true
             spacing: 0
@@ -944,6 +988,7 @@ BarWidget {
             id: plainLyricsView
             anchors.fill: parent
             anchors.margins: Style.space(10)
+            anchors.topMargin: Style.space(28)
             visible: root.spotifier && root.spotifier.lyricsLines.length === 0 && root.spotifier.plainLyrics !== ""
             clip: true
             contentWidth: width
@@ -1057,14 +1102,18 @@ BarWidget {
 
   IpcHandler {
     target: "spotifierPanel"
-    function open(): string { root.popupOpen = true; return "ok" }
+    function open(): string {
+      root.popupOpen = true
+      if (root.spotifier) root.spotifier.setLyricsActive(root.tab === 2)
+      return "ok"
+    }
     function close(): string { root.close(); return "ok" }
     function toggleTrackPlayback(): string { root.toggleTrackPlayback(); return "ok" }
     function toggleShortcuts(): string { root.toggleShortcutHelp(); return "ok" }
     function showTab(index: string): string {
       var value = Number(index)
-      if (value >= 0 && value < root.tabLabels.length) root.selectTab(value)
       root.popupOpen = true
+      if (value >= 0 && value < root.tabLabels.length) root.selectTab(value)
       return String(root.tab)
     }
     function state(): string {

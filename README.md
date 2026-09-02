@@ -6,16 +6,17 @@ Personal Spotify desktop client for Omarchy. Spotifier provides a compact bar wi
 
 ```text
 Omarchy QuickShell plugin
-        │ localhost HTTP/JSON
+        │ localhost HTTP/JSON + NDJSON event stream
         ▼
 spotifierd user service
-  ├── Spotify Web API: playback, search, playlists, and transport commands
-  ├── spotify_player: ncspot OAuth bootstrap for every Web API request
-  ├── librespot: the single local audio device
-  └── LRCLIB: synchronized and plain lyrics
+  ├── Spotify Web API: search and playlists
+  ├── spotifier-player: locally controlled librespot playback
+  ├── spotify_player: ncspot OAuth bootstrap and Spotify lyrics
+  ├── LRCLIB: LRCGET-compatible synchronized lyrics fallback
+  └── SQLite: permanent synchronized lyrics cache
 ```
 
-Playback has one authority: Spotify Web API commands targeted to the exact `Spotifier` device ID. `spotify_player` obtains the ncspot OAuth token but never starts playback or downloads library data itself.
+Track loading and every transport command use the local `spotifier-player` control socket. Play, pause, previous, next, seek, volume, shuffle, and repeat therefore bypass Spotify's rate-limited Web API. Playback events return over a local Unix datagram socket; QuickShell keeps one streaming connection to `spotifierd` and never polls Spotify for status.
 
 ## Cache freshness
 
@@ -23,16 +24,16 @@ The daemon uses bounded in-memory TTL caches to reduce Spotify, `spotify_player`
 
 | Data | TTL |
 | --- | ---: |
-| Playing state | 1.8 seconds |
-| Paused/idle state | 4 seconds |
 | Spotify devices | 30 seconds |
 | Playlist index | 5 minutes |
 | Playlist tracks | 10 minutes |
 | Search results | 2 minutes |
-| Found lyrics | 24 hours |
-| Missing lyrics | 15 minutes |
+| Synchronized lyrics | 24 hours |
+| Plain or missing lyrics | 15 minutes |
 
-Playback mutations invalidate playback state immediately and bypass caching for five seconds while Spotify converges. Authentication invalidates every account-derived cache. Device-command failures invalidate the device cache. Bounded LRU eviction prevents searches, playlists, or lyrics from growing memory without limit.
+Authentication invalidates every account-derived cache. Device-command failures invalidate the device cache. Bounded LRU eviction prevents searches, playlists, or lyrics from growing memory without limit.
+
+Opening the Lyrics tab checks Spotify first. When Spotify has no lyrics or only unsynchronized lyrics, the daemon tries LRCLIB's duration-sensitive exact lookup, then falls back to a title search. Search candidates must have synchronized lyrics, an exact normalized title, a duration within four seconds, and either a matching artist or an exact album. Artist, album, full artist credit, and nearest duration rank safe matches. The panel identifies the selected source above the lyrics. Every synchronized result is stored permanently in `~/.local/share/spotifier/lyrics.sqlite3`; later requests read it without contacting either provider.
 
 ## Panel keyboard shortcuts
 
@@ -57,7 +58,7 @@ Shortcuts are active only while the Spotifier popup is open. Typing shortcuts ar
 
 - Python 3.11+
 - Omarchy/QuickShell
-- `librespot`
+- Rust 1.85+ with Cargo
 - `spotify_player`
 - Spotify Premium
 
@@ -90,13 +91,14 @@ systemctl --user restart spotifierd.service
 journalctl --user -u spotifierd.service -n 100 --no-pager
 ```
 
-The service uses `KillMode=control-group`, ensuring daemon restarts cannot leave orphaned `librespot` audio processes.
+The service uses `KillMode=control-group`, ensuring daemon restarts cannot leave orphaned player processes.
 
 ## API
 
 ```text
 GET  /api/health
 GET  /api/status
+GET  /api/events
 GET  /api/playlists
 GET  /api/playlist_tracks?uri=spotify:{playlist|album}:...
 GET  /api/search?q=QUERY

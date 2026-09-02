@@ -1,6 +1,8 @@
+import io
 import unittest
-from unittest.mock import MagicMock, Mock, patch
+import urllib.error
 from threading import Event, Thread
+from unittest.mock import MagicMock, Mock, patch
 
 from spotifierd.config import Config
 from spotifierd.library import Library
@@ -18,6 +20,116 @@ class SpotifyApiTests(unittest.TestCase):
         api = SpotifyAPI(Config(), oauth)
 
         self.assertIsNone(api.request("PUT", "/me/player/pause"))
+
+    @patch("spotifierd.spotify.time.sleep")
+    @patch("spotifierd.spotify.urllib.request.urlopen")
+    def test_request_retries_rate_limit_once(self, urlopen, sleep) -> None:
+        limited = urllib.error.HTTPError(
+            "https://api.spotify.com/v1/search",
+            429,
+            "rate limited",
+            {"Retry-After": "0"},
+            io.BytesIO(b"limited"),
+        )
+        success = MagicMock()
+        success.__enter__.return_value.read.return_value = b'{"tracks": {}}'
+        urlopen.side_effect = [limited, success]
+        oauth = Mock()
+        oauth.token.return_value = {"access_token": "token"}
+
+        result = SpotifyAPI(Config(), oauth).request("GET", "/search?q=test")
+
+        self.assertEqual(result, {"tracks": {}})
+        self.assertEqual(urlopen.call_count, 2)
+        sleep.assert_called_once_with(0.1)
+
+    @patch("spotifierd.spotify.time.sleep")
+    @patch("spotifierd.spotify.urllib.request.urlopen")
+    def test_playback_poll_does_not_amplify_rate_limit(self, urlopen, sleep) -> None:
+        urlopen.side_effect = urllib.error.HTTPError(
+            "https://api.spotify.com/v1/me/player",
+            429,
+            "rate limited",
+            {"Retry-After": "5"},
+            io.BytesIO(b"limited"),
+        )
+        oauth = Mock()
+        oauth.token.return_value = {"access_token": "token"}
+
+        with self.assertRaisesRegex(RuntimeError, "Spotify rate limit: retry in 5 seconds"):
+            SpotifyAPI(Config(), oauth).playback(force=True)
+
+        self.assertEqual(urlopen.call_count, 1)
+        sleep.assert_not_called()
+
+    @patch("spotifierd.spotify.time.sleep")
+    @patch("spotifierd.spotify.urllib.request.urlopen")
+    def test_playback_mutation_reports_rate_limit_without_sleeping(self, urlopen, sleep) -> None:
+        limited = urllib.error.HTTPError(
+            "https://api.spotify.com/v1/me/player/play",
+            429,
+            "rate limited",
+            {"Retry-After": "2"},
+            io.BytesIO(b"limited"),
+        )
+        urlopen.side_effect = limited
+        oauth = Mock()
+        oauth.token.return_value = {"access_token": "token"}
+
+        with self.assertRaisesRegex(RuntimeError, "Spotify rate limit: retry in 2 seconds"):
+            SpotifyAPI(Config(), oauth).request(
+                "PUT", "/me/player/play?device_id=device", {}
+            )
+
+        self.assertEqual(urlopen.call_count, 1)
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 3)
+        sleep.assert_not_called()
+
+    def test_local_device_identity_is_reused(self) -> None:
+        api = SpotifyAPI(Config(device_name="Spotifier"), Mock())
+        api._discover_local_device_id = Mock(return_value="device-id")
+        api.devices = Mock()
+
+        self.assertEqual(api.local_device_id(), "device-id")
+        self.assertEqual(api.local_device_id(), "device-id")
+
+        api._discover_local_device_id.assert_called_once_with()
+        api.devices.assert_not_called()
+
+    @patch("spotifierd.spotify.urllib.request.urlopen")
+    def test_local_device_identity_comes_from_librespot(self, urlopen) -> None:
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = (
+            b'{"remoteName":"Spotifier","deviceID":"local-device"}'
+        )
+        urlopen.return_value = response
+
+        device_id = SpotifyAPI(Config(librespot_zeroconf_port=9876), Mock())._discover_local_device_id()
+
+        self.assertEqual(device_id, "local-device")
+        urlopen.assert_called_once_with("http://127.0.0.1:9876/?action=getInfo", timeout=2)
+
+    @patch("spotifierd.spotify.time.sleep")
+    @patch("spotifierd.spotify.urllib.request.urlopen")
+    def test_player_request_retries_rate_limit_once(self, urlopen, sleep) -> None:
+        limited = urllib.error.HTTPError(
+            "https://api.spotify.com/v1/me/playlists",
+            429,
+            "rate limited",
+            {"Retry-After": "1"},
+            io.BytesIO(b"limited"),
+        )
+        success = MagicMock()
+        success.__enter__.return_value.read.return_value = b'{"items": []}'
+        urlopen.side_effect = [limited, success]
+        oauth = Mock()
+        oauth.token.return_value = {"access_token": "token"}
+
+        result = SpotifyAPI(Config(), oauth).player_request("https://api.spotify.com/v1/me/playlists")
+
+        self.assertEqual(result, {"items": []})
+        self.assertEqual(urlopen.call_count, 2)
+        sleep.assert_called_once_with(1.0)
 
     def test_playlist_track_playback_preserves_context_for_navigation(self) -> None:
         api = SpotifyAPI(Config(), Mock())

@@ -1,5 +1,7 @@
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
+from pathlib import Path
 
 from spotifierd.cache import TTLCache
 from spotifierd.config import Config
@@ -65,6 +67,7 @@ class SpotifyCacheTests(unittest.TestCase):
     def test_device_lookup_reuses_cached_device_list(self) -> None:
         api = SpotifyAPI(Config(device_name="Spotifier"), Mock())
         api.request = Mock(return_value={"devices": [{"id": "device", "name": "Spotifier"}]})
+        api._discover_local_device_id = Mock(side_effect=OSError)
 
         self.assertEqual(api.local_device_id(), "device")
         self.assertEqual(api.local_device_id(), "device")
@@ -108,17 +111,18 @@ class LibraryCacheTests(unittest.TestCase):
 
 class LyricsCacheTests(unittest.TestCase):
     def test_lyrics_cache_reuses_result_and_invalidates(self) -> None:
-        lyrics = Lyrics()
-        result = {"found": True, "instrumental": False, "plain": "text", "lines": []}
-        lyrics._fetch = Mock(return_value=result)
+        with tempfile.TemporaryDirectory() as directory:
+            lyrics = Lyrics(Path(directory) / "lyrics.sqlite3")
+            result = {"found": True, "instrumental": False, "plain": "text", "lines": []}
+            lyrics._fetch = Mock(return_value=result)
 
-        self.assertIs(lyrics.get("Track", "Artist", "Album", 180), result)
-        self.assertIs(lyrics.get("track", "artist", "album", 180), result)
-        self.assertEqual(lyrics._fetch.call_count, 1)
+            self.assertEqual(lyrics.get("Track", "Artist", "Album", 180), {**result, "source": ""})
+            self.assertEqual(lyrics.get("track", "artist", "album", 180), {**result, "source": ""})
+            self.assertEqual(lyrics._fetch.call_count, 1)
 
-        lyrics.invalidate()
-        lyrics.get("Track", "Artist", "Album", 180)
-        self.assertEqual(lyrics._fetch.call_count, 2)
+            lyrics.invalidate()
+            lyrics.get("Track", "Artist", "Album", 180)
+            self.assertEqual(lyrics._fetch.call_count, 2)
 
 
 if __name__ == "__main__":

@@ -24,6 +24,13 @@ def spotify_id(uri: str) -> str:
     return uri.rstrip("/").split("/")[-1].split("?", 1)[0]
 
 
+def retry_delay(error: urllib.error.HTTPError) -> float:
+    try:
+        return min(30.0, max(0.1, float(error.headers.get("Retry-After", "0.5"))))
+    except (TypeError, ValueError):
+        return 0.5
+
+
 class SpotifyAPI:
     def __init__(self, cfg: Config, oauth: SpotifyPlayerOAuth | None = None):
         self.cfg = cfg
@@ -33,23 +40,39 @@ class SpotifyAPI:
         self._playback_lock = Lock()
         self._devices_lock = Lock()
         self._playback_bypass_until = 0.0
+        self._local_device_id: str | None = None
 
     def request(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
         token = self.oauth.token()
         if not token:
             raise PermissionError("Not logged in. Open /auth/login first.")
         payload = None if body is None else json.dumps(body).encode()
-        request = urllib.request.Request(API + path, data=payload, method=method)
-        request.add_header("Authorization", "Bearer " + token["access_token"])
-        if body is not None:
-            request.add_header("Content-Type", "application/json")
-        try:
-            with urllib.request.urlopen(request, timeout=12) as response:
-                raw = response.read()
-                return None if method != "GET" or not raw.strip() else json.loads(raw)
-        except urllib.error.HTTPError as error:
-            detail = error.read().decode(errors="replace")
-            raise RuntimeError(f"Spotify API {error.code}: {detail}") from error
+        attempts = 1 if path.startswith("/me/player") else 3
+        for attempt in range(attempts):
+            request = urllib.request.Request(API + path, data=payload, method=method)
+            request.add_header("Authorization", "Bearer " + token["access_token"])
+            if body is not None:
+                request.add_header("Content-Type", "application/json")
+            try:
+                with urllib.request.urlopen(
+                    request,
+                    timeout=3 if path.startswith("/me/player") else 12,
+                ) as response:
+                    raw = response.read()
+                    return None if method != "GET" or not raw.strip() else json.loads(raw)
+            except urllib.error.HTTPError as error:
+                detail = error.read().decode(errors="replace")
+                error.close()
+                if error.code == 429 and path.startswith("/me/player"):
+                    delay = retry_delay(error)
+                    raise RuntimeError(
+                        f"Spotify rate limit: retry in {delay:g} seconds"
+                    ) from error
+                if error.code == 429 and attempt + 1 < attempts:
+                    time.sleep(retry_delay(error))
+                    continue
+                raise RuntimeError(f"Spotify API {error.code}: {detail}") from error
+        raise RuntimeError("Spotify API request failed")
 
     def playlists(self) -> dict[str, Any]:
         return self.request("GET", "/me/playlists?limit=50")
@@ -61,14 +84,20 @@ class SpotifyAPI:
         token = self.oauth.token()
         if not token:
             raise PermissionError("Playlist login is incomplete. Open /auth/login.")
-        request = urllib.request.Request(url)
-        request.add_header("Authorization", "Bearer " + token["access_token"])
-        try:
-            with urllib.request.urlopen(request, timeout=12) as response:
-                return json.loads(response.read())
-        except urllib.error.HTTPError as error:
-            detail = error.read().decode(errors="replace")
-            raise RuntimeError(f"Spotify playlist API {error.code}: {detail}") from error
+        for attempt in range(3):
+            request = urllib.request.Request(url)
+            request.add_header("Authorization", "Bearer " + token["access_token"])
+            try:
+                with urllib.request.urlopen(request, timeout=12) as response:
+                    return json.loads(response.read())
+            except urllib.error.HTTPError as error:
+                detail = error.read().decode(errors="replace")
+                error.close()
+                if error.code == 429 and attempt < 2:
+                    time.sleep(retry_delay(error))
+                    continue
+                raise RuntimeError(f"Spotify playlist API {error.code}: {detail}") from error
+        raise RuntimeError("Spotify playlist API request failed")
 
     def player_playlists(self) -> list[dict[str, Any]]:
         url = API + "/me/playlists?limit=50"
@@ -162,11 +191,27 @@ class SpotifyAPI:
             return devices
 
     def local_device_id(self) -> str:
+        if self._local_device_id:
+            return self._local_device_id
+        try:
+            self._local_device_id = self._discover_local_device_id()
+            return self._local_device_id
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            pass
         for force in (False, True):
             for device in self.devices(force=force):
                 if device.get("name") == self.cfg.device_name:
-                    return str(device["id"])
+                    self._local_device_id = str(device["id"])
+                    return self._local_device_id
         raise RuntimeError(f'Spotify device "{self.cfg.device_name}" is not available')
+
+    def _discover_local_device_id(self) -> str:
+        url = f"http://127.0.0.1:{self.cfg.librespot_zeroconf_port}/?action=getInfo"
+        with urllib.request.urlopen(url, timeout=2) as response:
+            device = json.loads(response.read())
+        if device.get("remoteName") != self.cfg.device_name or not device.get("deviceID"):
+            raise ValueError(f'Local Spotify device "{self.cfg.device_name}" is not available')
+        return str(device["deviceID"])
 
     def play_uri(self, uri: str, context_uri: str | None = None) -> None:
         device_id = self.local_device_id()
@@ -212,6 +257,7 @@ class SpotifyAPI:
             self._playback_bypass_until = 0.0
         with self._devices_lock:
             self._devices_cache.clear()
+            self._local_device_id = None
 
     @staticmethod
     def _aged_playback(playback: dict[str, Any] | None, age: float) -> dict[str, Any] | None:

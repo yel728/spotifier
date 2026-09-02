@@ -59,9 +59,11 @@ Item {
 
   property var lyricsLines: []
   property string plainLyrics: ""
+  property string lyricsSource: ""
   property bool lyricsLoading: false
   property string lyricsError: ""
   property string lyricsTrackKey: ""
+  property bool lyricsActive: false
 
   property int actionRequests: 0
   readonly property bool actionPending: actionRequests > 0
@@ -104,100 +106,79 @@ Item {
     else xhr.send(JSON.stringify(body))
   }
 
+  function applyStatus(state) {
+    if (state.error) {
+      root.online = false
+      root.actionError = root.errorMessage(state, "Spotifier daemon is offline")
+      return
+    }
+    root.online = true
+    if (root.actionError === "Spotifier daemon is offline") root.actionError = ""
+    root.loggedIn = !!state.logged_in
+    root.libraryLoggedIn = !!state.library_logged_in
+    if (!root.loggedIn || !root.libraryLoggedIn) {
+      root.playlists = []
+      root.closePlaylist()
+    }
+    root.streamingReady = !!state.streaming_ready
+    root.streamingLoginUrl = state.streaming_login_url || ""
+    root.hasTrack = !!state.has_track
+    root.trackUri = state.uri || ""
+    root.title = state.title || ""
+    root.artist = state.artist || ""
+    root.album = state.album || ""
+    root.artUrl = state.art_url || ""
+    var reportedStatus = state.status || "Stopped"
+    if (root.playbackStatusTarget !== "") {
+      if (reportedStatus === root.playbackStatusTarget || root.actionError !== "") {
+        root.playbackStatus = reportedStatus
+        root.playbackStatusTarget = ""
+        root.playbackStatusTargetPolls = 0
+      }
+    } else {
+      root.playbackStatus = reportedStatus
+    }
+    root.positionSeconds = Number(state.position_s || 0)
+    root.lengthSeconds = Number(state.length_s || 0)
+    var reportedVolume = Math.max(0, Math.min(1, Number(state.volume || 0)))
+    if (root.volumeTarget < 0 || Math.abs(reportedVolume - root.volumeTarget) <= 0.011 || root.actionError !== "") {
+      root.volume = reportedVolume
+      root.volumeTarget = -1
+      root.volumeTargetPolls = 0
+    }
+    var reportedShuffle = state.shuffle ? 1 : 0
+    if (root.shuffleTarget < 0 || reportedShuffle === root.shuffleTarget || root.actionError !== "") {
+      root.shuffleEnabled = reportedShuffle === 1
+      root.shuffleTarget = -1
+      root.shuffleTargetPolls = 0
+    }
+    var reportedRepeat = state.repeat_mode || "None"
+    if (root.repeatModeTarget === "" || reportedRepeat === root.repeatModeTarget || root.actionError !== "") {
+      root.repeatMode = reportedRepeat
+      root.repeatModeTarget = ""
+      root.repeatModeTargetPolls = 0
+    }
+    if (root.lyricsActive) root.refreshLyrics()
+    if (root.loggedIn && root.libraryLoggedIn && root.playlists.length === 0 && !root.playlistsLoading) root.refreshPlaylists()
+  }
+
   function refresh() {
     if (statusPending) return
     statusPending = true
     request("GET", "/api/status", null, function(state) {
       root.statusPending = false
-      if (state.error) {
-        root.online = false
-        root.actionError = root.errorMessage(state, "Spotifier daemon is offline")
-        return
-      }
-      root.online = true
-      if (root.actionError === "Spotifier daemon is offline") root.actionError = ""
-      root.loggedIn = !!state.logged_in
-      root.libraryLoggedIn = !!state.library_logged_in
-      if (!root.loggedIn || !root.libraryLoggedIn) {
-        root.playlists = []
-        root.closePlaylist()
-      }
-      root.streamingReady = !!state.streaming_ready
-      root.streamingLoginUrl = state.streaming_login_url || ""
-      var preservePlayback = !!state.playback_error
-      if (!preservePlayback && !state.has_track && root.hasTrack) {
-        root.emptyPlaybackPolls += 1
-        preservePlayback = root.emptyPlaybackPolls < 3
-      } else if (state.has_track) {
-        root.emptyPlaybackPolls = 0
-      }
-      if (!preservePlayback) {
-        root.hasTrack = !!state.has_track
-        root.trackUri = state.uri || ""
-        root.title = state.title || ""
-        root.artist = state.artist || ""
-        root.album = state.album || ""
-        root.artUrl = state.art_url || ""
-        var reportedStatus = state.status || "Stopped"
-        if (root.playbackStatusTarget !== "") {
-          if (reportedStatus === root.playbackStatusTarget || root.actionError !== "" || root.playbackStatusTargetPolls >= 5) {
-            root.playbackStatus = reportedStatus
-            root.playbackStatusTarget = ""
-            root.playbackStatusTargetPolls = 0
-          } else {
-            root.playbackStatus = root.playbackStatusTarget
-            root.playbackStatusTargetPolls += 1
-          }
-        } else {
-          root.playbackStatus = reportedStatus
-        }
-        root.positionSeconds = Number(state.position_s || 0)
-        root.lengthSeconds = Number(state.length_s || 0)
-        var reportedVolume = Math.max(0, Math.min(1, Number(state.volume || 0)))
-        if (root.volumeTarget >= 0) {
-          var volumeSettled = Math.abs(reportedVolume - root.volumeTarget) <= 0.011
-          var volumeFailed = root.actionError !== ""
-          if (volumeSettled || volumeFailed || root.volumeTargetPolls >= 4) {
-            root.volume = reportedVolume
-            root.volumeTarget = -1
-            root.volumeTargetPolls = 0
-          } else {
-            root.volume = root.volumeTarget
-            if (!root.actionPending) root.volumeTargetPolls += 1
-          }
-        } else {
-          root.volume = reportedVolume
-        }
-        var reportedShuffle = state.shuffle ? 1 : 0
-        if (root.shuffleTarget >= 0) {
-          if (reportedShuffle === root.shuffleTarget || root.actionError !== "" || root.shuffleTargetPolls >= 5) {
-            root.shuffleEnabled = reportedShuffle === 1
-            root.shuffleTarget = -1
-            root.shuffleTargetPolls = 0
-          } else {
-            root.shuffleEnabled = root.shuffleTarget === 1
-            root.shuffleTargetPolls += 1
-          }
-        } else {
-          root.shuffleEnabled = reportedShuffle === 1
-        }
-        var reportedRepeat = state.repeat_mode || "None"
-        if (root.repeatModeTarget !== "") {
-          if (reportedRepeat === root.repeatModeTarget || root.actionError !== "" || root.repeatModeTargetPolls >= 5) {
-            root.repeatMode = reportedRepeat
-            root.repeatModeTarget = ""
-            root.repeatModeTargetPolls = 0
-          } else {
-            root.repeatMode = root.repeatModeTarget
-            root.repeatModeTargetPolls += 1
-          }
-        } else {
-          root.repeatMode = reportedRepeat
-        }
-        root.refreshLyrics()
-      }
-      if (root.loggedIn && root.libraryLoggedIn && root.playlists.length === 0 && !root.playlistsLoading) root.refreshPlaylists()
+      root.applyStatus(state)
     })
+  }
+
+  function applyStatusLine(line) {
+    var text = String(line || "").trim()
+    if (!text) return
+    try {
+      root.applyStatus(JSON.parse(text))
+    } catch (error) {
+      console.warn("spotifier invalid event state", String(error))
+    }
   }
 
   function clearPlayback() {
@@ -217,7 +198,7 @@ Item {
     playbackStatus = "Stopped"
     positionSeconds = 0
     lengthSeconds = 0
-    refreshLyrics()
+    if (root.lyricsActive) refreshLyrics()
   }
 
   function refreshPlaylists() {
@@ -344,16 +325,23 @@ Item {
     })
   }
 
+  function setLyricsActive(active) {
+    lyricsActive = active
+    if (active) refreshLyrics()
+  }
+
   function refreshLyrics() {
     var key = hasTrack ? title + "\n" + artist + "\n" + album + "\n" + Math.round(lengthSeconds) : ""
     if (key === lyricsTrackKey) return
     lyricsTrackKey = key
     lyricsLines = []
     plainLyrics = ""
+    lyricsSource = ""
     lyricsError = ""
     lyricsLoading = key !== ""
     if (!key) return
-    var path = "/api/lyrics?track=" + encodeURIComponent(title)
+    var path = "/api/lyrics?uri=" + encodeURIComponent(trackUri)
+      + "&track=" + encodeURIComponent(title)
       + "&artist=" + encodeURIComponent(artist)
       + "&album=" + encodeURIComponent(album)
       + "&duration=" + encodeURIComponent(lengthSeconds)
@@ -367,6 +355,7 @@ Item {
       else {
         root.lyricsLines = data.lines || []
         root.plainLyrics = data.plain || ""
+        root.lyricsSource = data.source || ""
         if (root.lyricsLines.length === 0 && !root.plainLyrics) root.lyricsError = "Lyrics unavailable"
       }
     })
@@ -388,10 +377,11 @@ Item {
     perform("/api/play", body)
   }
   function playPause() {
+    if (actionPending) return
     playbackStatusTarget = isPlaying ? "Paused" : "Playing"
     playbackStatusTargetPolls = 0
     playbackStatus = playbackStatusTarget
-    perform(playbackStatusTarget === "Paused" ? "/api/pause" : "/api/resume", null)
+    perform("/api/playpause", null)
   }
   function stop() {
     playbackStatusTarget = "Paused"
@@ -399,8 +389,12 @@ Item {
     playbackStatus = playbackStatusTarget
     perform("/api/stop", null)
   }
-  function next() { perform("/api/next", null) }
-  function previous() { perform("/api/previous", null) }
+  function next() {
+    if (!actionPending) perform("/api/next", null)
+  }
+  function previous() {
+    if (!actionPending) perform("/api/previous", null)
+  }
   function seek(fraction) {
     if (lengthSeconds > 0) perform("/api/seek", { position: Math.max(0, Math.min(1, fraction)) * lengthSeconds })
   }
@@ -462,7 +456,26 @@ Item {
     }
   }
 
-  Timer { interval: 1000; running: true; repeat: true; triggeredOnStart: true; onTriggered: root.refresh() }
+  Process {
+    id: statusEvents
+    running: true
+    command: ["curl", "--silent", "--show-error", "--no-buffer", root.api + "/api/events"]
+    stdout: SplitParser { onRead: function(line) { root.applyStatusLine(line) } }
+    onExited: statusEventRestart.restart()
+  }
+  Timer {
+    id: statusEventRestart
+    interval: 1000
+    onTriggered: statusEvents.running = true
+  }
+  Timer {
+    interval: 1000
+    running: root.hasTrack && root.isPlaying
+    repeat: true
+    onTriggered: root.positionSeconds = root.lengthSeconds > 0
+      ? Math.min(root.lengthSeconds, root.positionSeconds + 1)
+      : root.positionSeconds + 1
+  }
   Timer { interval: 2000; running: root.playlistArtPending; repeat: true; onTriggered: root.refreshPlaylistArt() }
   Timer { interval: 2000; running: root.searchCollectionArtPending; repeat: true; onTriggered: root.refreshSearchCollectionArt() }
 
@@ -490,6 +503,7 @@ Item {
         searchError: root.searchError,
         lyrics: root.lyricsLines.length,
         lyricsError: root.lyricsError,
+        lyricsSource: root.lyricsSource,
         actionError: root.actionError
       })
     }

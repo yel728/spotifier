@@ -6,6 +6,12 @@ template="$project_dir/systemd/spotifierd.service.in"
 unit_dir="$HOME/.config/systemd/user"
 unit="$unit_dir/spotifierd.service"
 
+command -v cargo >/dev/null || {
+  printf 'cargo is required to build the local Spotifier player\n' >&2
+  exit 1
+}
+cargo build --release --manifest-path "$project_dir/player/Cargo.toml"
+
 mkdir -p "$unit_dir"
 python - "$template" "$unit" "$project_dir" <<'PY'
 from pathlib import Path
