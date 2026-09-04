@@ -189,22 +189,12 @@ fn parse_bool(value: Option<&str>) -> Result<bool, String> {
     }
 }
 
-fn start_event_relay(
-    mut events: librespot::playback::player::PlayerEventChannel,
-    path: PathBuf,
-    handle: Arc<Mutex<Option<Spirc>>>,
-) {
+fn start_event_relay(mut events: librespot::playback::player::PlayerEventChannel, path: PathBuf) {
     thread::spawn(move || {
         let socket = UnixDatagram::unbound().expect("create event socket");
         while let Some(event) = events.blocking_recv() {
-            let unavailable = matches!(&event, PlayerEvent::Unavailable { .. });
             if let Some(payload) = event_payload(event) {
                 let _ = socket.send_to(payload.to_string().as_bytes(), &path);
-            }
-            if unavailable {
-                if let Some(spirc) = handle.lock().expect("spirc handle poisoned").as_ref() {
-                    let _ = spirc.disconnect(true);
-                }
             }
         }
     });
@@ -264,11 +254,6 @@ fn event_payload(event: PlayerEvent) -> Option<Value> {
             position_ms,
             ..
         } => position_event(&mut data, "position_correction", track_id, position_ms)?,
-        PlayerEvent::Unavailable { track_id, .. } => {
-            put("PLAYER_EVENT", "unavailable".into());
-            put("TRACK_ID", track_id.to_id().ok()?);
-            put("ERROR", "Spotify could not load the selected track".into());
-        }
         PlayerEvent::Stopped { track_id, .. } => {
             put("PLAYER_EVENT", "stopped".into());
             put("TRACK_ID", track_id.to_id().ok()?);
@@ -366,7 +351,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (spirc, spirc_task) =
         Spirc::new(connect_config, session.clone(), credentials, player, mixer).await?;
     let handle = Arc::new(Mutex::new(Some(spirc)));
-    start_event_relay(events, event_path, handle.clone());
+    start_event_relay(events, event_path);
     start_control_server(
         control_path.clone(),
         handle.clone(),

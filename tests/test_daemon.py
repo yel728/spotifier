@@ -105,46 +105,32 @@ class DaemonLifecycleTests(unittest.TestCase):
             "load spotify:track:second spotify:playlist:context"
         )
 
-    @patch("spotifierd.playback.threading.Timer")
-    def test_unavailable_requested_track_retries_once_without_context(self, timer_class) -> None:
-        daemon = LibrespotSupervisor(Config())
-        daemon.last_load = ("spotify:track:failed", "spotify:playlist:context")
-        daemon.load_generation = 4
-        retry_timer = Mock()
-        timer_class.return_value = retry_timer
-        event = {"PLAYER_EVENT": "unavailable", "TRACK_ID": "failed"}
-
-        daemon._recover_unavailable(event)
-        daemon._recover_unavailable(event)
-
-        timer_class.assert_called_once_with(
-            2.0,
-            daemon._commit_load,
-            args=(4, "spotify:track:failed", ""),
-        )
-        retry_timer.start.assert_called_once_with()
-        self.assertEqual(daemon.load_retries, 1)
-
-    def test_unavailable_track_error_survives_stop_and_clears_on_success(self) -> None:
+    def test_unavailable_track_does_not_interrupt_player_state(self) -> None:
         state = EventPlaybackState()
         state.apply({
-            "PLAYER_EVENT": "unavailable",
-            "TRACK_ID": "failed",
-            "ERROR": "Spotify could not load the selected track",
+            "PLAYER_EVENT": "track_changed",
+            "TRACK_ID": "playing",
+            "URI": "spotify:track:playing",
+            "NAME": "Playing Track",
+            "DURATION_MS": "180000",
         })
-        state.apply({"PLAYER_EVENT": "stopped", "TRACK_ID": "failed"})
-
-        self.assertEqual(
-            state.snapshot()["playback_error"],
-            "Spotify could not load the selected track",
-        )
+        state.apply({
+            "PLAYER_EVENT": "playing",
+            "TRACK_ID": "playing",
+            "POSITION_MS": "12000",
+        })
 
         state.apply({
-            "PLAYER_EVENT": "track_changed",
-            "TRACK_ID": "recovered",
-            "URI": "spotify:track:recovered",
+            "PLAYER_EVENT": "unavailable",
+            "TRACK_ID": "unavailable",
+            "ERROR": "Spotify could not load the selected track",
         })
-        self.assertEqual(state.snapshot()["playback_error"], "")
+
+        snapshot = state.snapshot()
+        self.assertTrue(snapshot["has_track"])
+        self.assertEqual(snapshot["uri"], "spotify:track:playing")
+        self.assertEqual(snapshot["status"], "Playing")
+        self.assertEqual(snapshot["playback_error"], "")
 
     def test_play_pause_uses_local_player_not_spotify(self) -> None:
         app = Application.__new__(Application)
