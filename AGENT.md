@@ -70,7 +70,7 @@ Do not add fallback playback commands. Multiple control authorities caused dupli
 - Extrapolate cached playing position from monotonic cache age.
 - Every successful playback mutation clears playback state and bypasses caching for five seconds so Spotify's eventually consistent response cannot be cached as current state.
 - Cache devices for 30 seconds; invalidate them after command failure and force-refresh once when the configured device is absent.
-- Cache playlist index for 5 minutes, playlist tracks for 10 minutes, and normalized search queries for 2 minutes.
+- Cache the playlist index for 5 minutes and normalized search queries for 2 minutes. Persist up to 24 playlist and album track snapshots, serve them immediately, refresh them in the background on access, and rewrite storage only when normalized content changes.
 - Cache found lyrics for 24 hours and negative lyric results for 15 minutes.
 - OAuth completion invalidates playback, devices, library, search, and lyrics.
 - All variable-key caches must remain bounded.

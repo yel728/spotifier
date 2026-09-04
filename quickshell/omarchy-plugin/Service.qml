@@ -45,6 +45,8 @@ Item {
   property bool playlistArtPending: false
   property string playlistError: ""
   property string playlistRequestUri: ""
+  property bool playlistRefreshPending: false
+  property string playlistVersion: ""
 
   property string searchQuery: ""
   property var searchResults: []
@@ -57,6 +59,8 @@ Item {
   property bool searchCollectionArtPending: false
   property string searchCollectionError: ""
   property string searchCollectionRequestUri: ""
+  property bool searchCollectionRefreshPending: false
+  property string searchCollectionVersion: ""
 
   property var lyricsLines: []
   property string plainLyrics: ""
@@ -223,6 +227,8 @@ Item {
     playlistError = ""
     playlistLoading = true
     playlistArtPending = false
+    playlistRefreshPending = false
+    playlistVersion = ""
     playlistRequestUri = playlist && playlist.uri ? String(playlist.uri) : ""
     var uri = playlistRequestUri
     if (!uri) {
@@ -237,6 +243,8 @@ Item {
       if (!data.error) {
         root.playlistTracks = data.items || []
         root.playlistArtPending = !!data.art_pending
+        root.playlistRefreshPending = !!data.refreshing
+        root.playlistVersion = data.version || ""
         if (root.playlistTracks.length === 0) root.playlistError = "No tracks found"
       }
     })
@@ -244,11 +252,17 @@ Item {
 
   function refreshPlaylistArt() {
     var uri = playlistRequestUri
-    if (!playlistArtPending || !uri) return
+    if ((!playlistArtPending && !playlistRefreshPending) || !uri) return
     request("GET", "/api/playlist_tracks?cached=1&uri=" + encodeURIComponent(uri), null, function(data) {
       if (root.playlistRequestUri !== uri || data.error) return
-      root.playlistTracks = data.items || root.playlistTracks
       root.playlistArtPending = !!data.art_pending
+      root.playlistRefreshPending = !!data.refreshing
+      var version = data.version || ""
+      if (version !== root.playlistVersion) {
+        root.playlistTracks = data.items || []
+        root.playlistVersion = version
+        root.playlistError = root.playlistTracks.length === 0 ? "No tracks found" : ""
+      }
     })
   }
 
@@ -258,6 +272,8 @@ Item {
     playlistError = ""
     playlistLoading = false
     playlistArtPending = false
+    playlistRefreshPending = false
+    playlistVersion = ""
     playlistRequestUri = ""
   }
 
@@ -267,6 +283,8 @@ Item {
     searchCollectionError = ""
     searchCollectionLoading = true
     searchCollectionArtPending = false
+    searchCollectionRefreshPending = false
+    searchCollectionVersion = ""
     searchCollectionRequestUri = collection && collection.uri ? String(collection.uri) : ""
     var uri = searchCollectionRequestUri
     if (!uri) {
@@ -281,6 +299,8 @@ Item {
       if (!data.error) {
         root.searchCollectionTracks = data.items || []
         root.searchCollectionArtPending = !!data.art_pending
+        root.searchCollectionRefreshPending = !!data.refreshing
+        root.searchCollectionVersion = data.version || ""
         if (root.searchCollectionTracks.length === 0) root.searchCollectionError = "No tracks found"
       }
     })
@@ -288,11 +308,17 @@ Item {
 
   function refreshSearchCollectionArt() {
     var uri = searchCollectionRequestUri
-    if (!searchCollectionArtPending || !uri) return
+    if ((!searchCollectionArtPending && !searchCollectionRefreshPending) || !uri) return
     request("GET", "/api/playlist_tracks?cached=1&uri=" + encodeURIComponent(uri), null, function(data) {
       if (root.searchCollectionRequestUri !== uri || data.error) return
-      root.searchCollectionTracks = data.items || root.searchCollectionTracks
       root.searchCollectionArtPending = !!data.art_pending
+      root.searchCollectionRefreshPending = !!data.refreshing
+      var version = data.version || ""
+      if (version !== root.searchCollectionVersion) {
+        root.searchCollectionTracks = data.items || []
+        root.searchCollectionVersion = version
+        root.searchCollectionError = root.searchCollectionTracks.length === 0 ? "No tracks found" : ""
+      }
     })
   }
 
@@ -302,6 +328,8 @@ Item {
     searchCollectionError = ""
     searchCollectionLoading = false
     searchCollectionArtPending = false
+    searchCollectionRefreshPending = false
+    searchCollectionVersion = ""
     searchCollectionRequestUri = ""
   }
 
@@ -478,8 +506,18 @@ Item {
       ? Math.min(root.lengthSeconds, root.positionSeconds + 1)
       : root.positionSeconds + 1
   }
-  Timer { interval: 2000; running: root.playlistArtPending; repeat: true; onTriggered: root.refreshPlaylistArt() }
-  Timer { interval: 2000; running: root.searchCollectionArtPending; repeat: true; onTriggered: root.refreshSearchCollectionArt() }
+  Timer {
+    interval: 500
+    running: root.playlistArtPending || root.playlistRefreshPending
+    repeat: true
+    onTriggered: root.refreshPlaylistArt()
+  }
+  Timer {
+    interval: 500
+    running: root.searchCollectionArtPending || root.searchCollectionRefreshPending
+    repeat: true
+    onTriggered: root.refreshSearchCollectionArt()
+  }
 
   IpcHandler {
     target: "spotifier"

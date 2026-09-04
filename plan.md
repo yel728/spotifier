@@ -147,12 +147,12 @@ Errors have stable codes:
 | Paused/idle state | 4 seconds | Every playback mutation |
 | Spotify devices | 30 seconds | Command failure, missing configured device, OAuth |
 | Playlist index | 5 minutes | TTL, OAuth |
-| Playlist tracks | 10 minutes | TTL, OAuth |
+| Playlist and album tracks | Persistent snapshot | Background refresh on access, OAuth |
 | Search results | 2 minutes | TTL, OAuth |
 | Found lyrics | 24 hours | TTL, OAuth |
 | Missing lyrics | 15 minutes | TTL, OAuth |
 
-Playback caching is bypassed for five seconds after a mutation. Spotify playback updates are eventually consistent; caching the first pre-change response would otherwise make a successful control look reverted. Cached playing position is advanced from monotonic elapsed time. Playlist, search, and lyrics caches use bounded LRU eviction.
+Playback caching is bypassed for five seconds after a mutation. Spotify playback updates are eventually consistent; caching the first pre-change response would otherwise make a successful control look reverted. Cached playing position is advanced from monotonic elapsed time. Playlist and album snapshots are served immediately, refreshed in the background, and persisted only when normalized content changes. Variable-key memory caches use bounded LRU eviction.
 
 ## Installation
 
@@ -193,11 +193,10 @@ A release is not complete until all of these pass:
 
 ## Remaining roadmap
 
-1. Persist successful playlist track caches with snapshot-based invalidation.
-2. Add liked tracks, saved albums, followed artists, and queue views.
-3. Add logout/re-authentication controls.
-4. Add API integration tests around structured errors and routing.
-5. Reduce status polling when the panel is closed and playback is stopped.
+1. Add liked tracks, saved albums, followed artists, and queue views.
+2. Add logout/re-authentication controls.
+3. Add API integration tests around structured errors and routing.
+4. Reduce status polling when the panel is closed and playback is stopped.
 
 ## Known external warning
 

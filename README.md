@@ -16,22 +16,22 @@ spotifierd user service
   └── SQLite: permanent synchronized lyrics cache
 ```
 
-Track loading and every transport command use the local `spotifier-player` control socket. Play, pause, previous, next, seek, volume, shuffle, and repeat therefore bypass Spotify's rate-limited Web API. Slow lyric metadata requests run independently from ordered playback commands, and track selections arriving within 200 milliseconds coalesce to the latest selection rather than queueing stale loads. If Spotify cannot load the requested track, the player disconnects before librespot can continue through the context, retries that exact track once without a context, and reports the failure instead of silently playing another track. Playback events return over a local Unix datagram socket; QuickShell keeps one streaming connection to `spotifierd` and never polls Spotify for status.
+Track loading and every transport command use the local `spotifier-player` control socket. Play, pause, previous, next, seek, volume, shuffle, and repeat therefore bypass Spotify's rate-limited Web API. Slow lyric metadata requests run independently from ordered playback commands, and track selections arriving within 200 milliseconds coalesce to the latest selection rather than queueing stale loads. When a track is unavailable, librespot skips it without disconnecting the active device or corrupting subsequent controls. Playback events return over a local Unix datagram socket; QuickShell keeps one streaming connection to `spotifierd` and never polls Spotify for status.
 
 ## Cache freshness
 
-The daemon uses bounded in-memory TTL caches to reduce Spotify, `spotify_player`, and LRCLIB traffic without hiding state changes:
+The daemon uses bounded in-memory TTL caches plus persistent collection snapshots to reduce Spotify, `spotify_player`, and LRCLIB traffic without hiding state changes:
 
-| Data | TTL |
-| --- | ---: |
+| Data | Policy |
+| --- | --- |
 | Spotify devices | 30 seconds |
 | Playlist index | 5 minutes |
-| Playlist tracks | 10 minutes |
+| Playlist and album tracks | Persistent snapshot; background refresh on open |
 | Search results | 2 minutes |
 | Synchronized lyrics | 24 hours |
 | Plain or missing lyrics | 15 minutes |
 
-Authentication invalidates every account-derived cache. Device-command failures invalidate the device cache. Bounded LRU eviction prevents searches, playlists, or lyrics from growing memory without limit.
+Playlist and album snapshots are returned immediately, refreshed asynchronously, and rewritten only when normalized track data changes. Authentication invalidates every account-derived cache. Device-command failures invalidate the device cache. Bounded LRU eviction prevents searches, collections, or lyrics from growing memory without limit.
 
 Opening the Lyrics tab asks the authenticated local `spotifier-player` session for Spotify's native lyric metadata first, preserving its line timestamps without a Web API or CLI request. When Spotify has no lyrics or only unsynchronized lyrics, the daemon tries LRCLIB's duration-sensitive exact lookup, then falls back to a title search. LRCLIB candidates must have synchronized lyrics, an exact normalized title, a duration within four seconds, and either a matching artist or an exact album. Artist, album, full artist credit, and nearest duration rank safe matches. The panel identifies the selected source above the lyrics. Every synchronized result is stored permanently in `~/.local/share/spotifier/lyrics.sqlite3`; later requests read it without contacting either provider.
 

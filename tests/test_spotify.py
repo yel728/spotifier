@@ -209,13 +209,15 @@ class SpotifyApiTests(unittest.TestCase):
         }
         library = Library(spotify)
         try:
-            tracks, pending = library.tracks("spotify:album:album-id")
+            tracks, pending, refreshing, version = library.tracks("spotify:album:album-id")
         finally:
             library.close()
 
         spotify.player_album.assert_called_once_with("album-id")
         spotify.player_playlist.assert_not_called()
         self.assertFalse(pending)
+        self.assertFalse(refreshing)
+        self.assertTrue(version)
         self.assertEqual(tracks, [{
             "type": "track",
             "name": "Track",

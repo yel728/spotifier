@@ -144,10 +144,15 @@ class Handler(BaseHTTPRequestHandler):
             if not uri:
                 raise ApiError("playlist_missing", "A playlist URI is required")
             if query.get("cached", ["0"])[0] == "1":
-                items, pending = app.library.cached_tracks(uri)
+                items, art_pending, refreshing, version = app.library.cached_tracks(uri)
             else:
-                items, pending = app.library.tracks(uri)
-            return self._json({"items": items, "art_pending": pending})
+                items, art_pending, refreshing, version = app.library.tracks(uri)
+            return self._json({
+                "items": items,
+                "art_pending": art_pending,
+                "refreshing": refreshing,
+                "version": version,
+            })
         if url.path == "/api/search":
             value = query.get("q", [""])[0].strip()
             if not value:

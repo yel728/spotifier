@@ -33,13 +33,13 @@ class TTLCache(Generic[K, V]):
         self._entries: OrderedDict[K, _Entry[V]] = OrderedDict()
         self._lock = Lock()
 
-    def get(self, key: K) -> CacheHit[V] | None:
+    def get(self, key: K, stale: bool = False) -> CacheHit[V] | None:
         now = time.monotonic()
         with self._lock:
             entry = self._entries.get(key)
             if entry is None:
                 return None
-            if entry.expires_at <= now:
+            if entry.expires_at <= now and not stale:
                 del self._entries[key]
                 return None
             self._entries.move_to_end(key)
@@ -64,13 +64,17 @@ class TTLCache(Generic[K, V]):
         with self._lock:
             self._entries.clear()
 
-    def values(self) -> list[V]:
+    def values(self, stale: bool = False) -> list[V]:
+        return [value for _, value in self.items(stale)]
+
+    def items(self, stale: bool = False) -> list[tuple[K, V]]:
         now = time.monotonic()
         with self._lock:
-            expired = [key for key, entry in self._entries.items() if entry.expires_at <= now]
-            for key in expired:
-                del self._entries[key]
-            return [entry.value for entry in self._entries.values()]
+            if not stale:
+                expired = [key for key, entry in self._entries.items() if entry.expires_at <= now]
+                for key in expired:
+                    del self._entries[key]
+            return [(key, entry.value) for key, entry in self._entries.items()]
 
     def __len__(self) -> int:
         with self._lock:

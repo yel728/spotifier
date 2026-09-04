@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -107,6 +108,74 @@ class LibraryCacheTests(unittest.TestCase):
         result = library.search("Track")
 
         self.assertEqual(result[0]["context_uri"], "spotify:album:album")
+
+    def test_playlist_and_album_tracks_are_served_from_persistent_cache(self) -> None:
+        item = {
+            "type": "track",
+            "name": "Cached Track",
+            "subtitle": "Artist",
+            "uri": "spotify:track:cached",
+            "image": "cover",
+            "album_id": "album-id",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            cache_path = Path(directory) / "collections.json"
+            cache_path.write_text(json.dumps({
+                "playlist:playlist-id": [item],
+                "album:album-id": [item],
+            }))
+            with patch("spotifierd.library.COLLECTION_CACHE_PATH", cache_path):
+                spotify = Mock()
+                library = Library(spotify)
+                self.addCleanup(library.close)
+                with patch.object(library, "_schedule_collection_refresh") as refresh:
+                    playlist = library.tracks("spotify:playlist:playlist-id")
+                    album = library.tracks("spotify:album:album-id")
+
+        self.assertEqual(playlist[0][0]["name"], "Cached Track")
+        self.assertEqual(album[0][0]["name"], "Cached Track")
+        self.assertTrue(playlist[2])
+        self.assertTrue(album[2])
+        self.assertTrue(playlist[3])
+        self.assertTrue(album[3])
+        self.assertEqual(refresh.call_count, 2)
+        spotify.player_playlist.assert_not_called()
+        spotify.player_album.assert_not_called()
+
+    def test_collection_refresh_writes_only_changed_api_data(self) -> None:
+        raw = {
+            "tracks": [{
+                "id": "track-id",
+                "uri": "spotify:track:track-id",
+                "name": "Original",
+                "artists": [{"name": "Artist"}],
+                "album": {"id": "album-id", "images": [{"url": "cover"}]},
+            }],
+        }
+        spotify = Mock()
+        spotify.player_album.return_value = raw
+        with tempfile.TemporaryDirectory() as directory:
+            cache_path = Path(directory) / "collections.json"
+            with patch("spotifierd.library.COLLECTION_CACHE_PATH", cache_path):
+                library = Library(spotify)
+                self.addCleanup(library.close)
+                initial = library.tracks("spotify:album:album-id")
+                self.assertTrue(cache_path.exists())
+
+                with patch.object(library, "_save_collection_cache") as save:
+                    library._refresh_tracks("spotify:album:album-id", "album:album-id", 0)
+                    save.assert_not_called()
+
+                    spotify.player_album.return_value = {
+                        "tracks": [{**raw["tracks"][0], "name": "Updated"}],
+                    }
+                    library._refresh_tracks("spotify:album:album-id", "album:album-id", 0)
+                    save.assert_called_once_with()
+
+                updated = library.cached_tracks("spotify:album:album-id")
+
+        self.assertEqual(updated[0][0]["name"], "Updated")
+        self.assertNotEqual(initial[3], updated[3])
 
 
 class LyricsCacheTests(unittest.TestCase):
