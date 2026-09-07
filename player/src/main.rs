@@ -351,38 +351,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .zeroconf_backend(discovery_backend)
     .launch()?;
 
-    let (spirc, spirc_task) =
-        Spirc::new(connect_config, session.clone(), credentials, player, mixer).await?;
-    let handle = Arc::new(Mutex::new(Some(spirc)));
-    start_event_relay(events, event_path);
-    start_control_server(
-        control_path.clone(),
-        handle.clone(),
-        session.clone(),
-        tokio::runtime::Handle::current(),
-    )?;
-    println!("spotifier-player ready: {}", control_path.display());
+    // Every exit after discovery starts must join its blocking worker while
+    // Tokio can still run the mDNS responder. Dropping the runtime first makes
+    // libmdns panic when its destructors send to the cancelled responder.
+    let result = async {
+        let (spirc, spirc_task) =
+            Spirc::new(connect_config, session.clone(), credentials, player, mixer).await?;
+        let handle = Arc::new(Mutex::new(Some(spirc)));
+        let result = async {
+            start_event_relay(events, event_path);
+            start_control_server(
+                control_path.clone(),
+                handle.clone(),
+                session.clone(),
+                tokio::runtime::Handle::current(),
+            )?;
+            println!("spotifier-player ready: {}", control_path.display());
 
-    tokio::pin!(spirc_task);
-    let disconnected = wait_for_disconnect(&session);
-    tokio::pin!(disconnected);
-    loop {
-        tokio::select! {
-            _ = &mut spirc_task => return Err("Spotify Connect session stopped".into()),
-            _ = &mut disconnected => return Err("Spotify connection lost".into()),
-            _ = tokio::signal::ctrl_c() => break,
-            credentials = discovery.next() => {
-                if credentials.is_none() {
-                    return Err("Spotify discovery stopped".into());
+            let mut terminate =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+            tokio::pin!(spirc_task);
+            let disconnected = wait_for_disconnect(&session);
+            tokio::pin!(disconnected);
+            loop {
+                tokio::select! {
+                    _ = &mut spirc_task => return Err("Spotify Connect session stopped".into()),
+                    _ = &mut disconnected => return Err("Spotify connection lost".into()),
+                    signal = tokio::signal::ctrl_c() => {
+                        signal?;
+                        break;
+                    }
+                    _ = terminate.recv() => break,
+                    credentials = discovery.next() => {
+                        if credentials.is_none() {
+                            return Err("Spotify discovery stopped".into());
+                        }
+                    }
                 }
             }
+            Ok(())
         }
+        .await;
+        if let Some(spirc) = handle.lock().ok().and_then(|mut guard| guard.take()) {
+            let _ = spirc.shutdown();
+        }
+        let _ = fs::remove_file(control_path);
+        result
     }
-    if let Some(spirc) = handle.lock().ok().and_then(|mut guard| guard.take()) {
-        let _ = spirc.shutdown();
-    }
-    let _ = fs::remove_file(control_path);
-    Ok(())
+    .await;
+    discovery.shutdown().await;
+    result
 }
 
 // Spirc can remain blocked waiting for a command after the underlying session
@@ -431,5 +449,31 @@ mod tests {
             "play",
         );
         assert_eq!(result.unwrap_err(), "Spotify connection lost; reconnecting");
+    }
+
+    // Exercise the real libmdns blocking worker on the same runtime flavor as
+    // main. A teardown regression aborts the test process rather than unwinding.
+    #[test]
+    fn discovery_shutdown_completes_before_runtime_drop() {
+        for _ in 0..10 {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let discovery = Discovery::builder(
+                    "spotifier-shutdown-test".to_owned(),
+                    "spotifier-shutdown-test".to_owned(),
+                )
+                .name("Spotifier shutdown test".to_owned())
+                .port(0)
+                .zeroconf_backend(librespot::discovery::find(Some("libmdns")).unwrap())
+                .launch()
+                .unwrap();
+                tokio::task::yield_now().await;
+                discovery.shutdown().await;
+            });
+            drop(runtime);
+        }
     }
 }
