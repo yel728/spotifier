@@ -108,6 +108,9 @@ fn dispatch(
     runtime: &tokio::runtime::Handle,
     request: &str,
 ) -> Result<String, String> {
+    if session.is_invalid() {
+        return Err("Spotify connection lost; reconnecting".to_owned());
+    }
     let mut parts = request.split_whitespace();
     let command = parts.next().ok_or("empty command")?;
     if command == "lyrics" {
@@ -355,15 +358,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     start_control_server(
         control_path.clone(),
         handle.clone(),
-        session,
+        session.clone(),
         tokio::runtime::Handle::current(),
     )?;
     println!("spotifier-player ready: {}", control_path.display());
 
     tokio::pin!(spirc_task);
+    let disconnected = wait_for_disconnect(&session);
+    tokio::pin!(disconnected);
     loop {
         tokio::select! {
             _ = &mut spirc_task => return Err("Spotify Connect session stopped".into()),
+            _ = &mut disconnected => return Err("Spotify connection lost".into()),
             _ = tokio::signal::ctrl_c() => break,
             credentials = discovery.next() => {
                 if credentials.is_none() {
@@ -379,6 +385,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+// Spirc can remain blocked waiting for a command after the underlying session
+// dies. Exit independently so the daemon's supervisor can reconnect the player.
+async fn wait_for_disconnect(session: &Session) {
+    while !session.is_invalid() {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+}
+
 fn oauth_credentials(client_id: &str) -> Result<Credentials, Box<dyn std::error::Error>> {
     let client =
         OAuthClientBuilder::new(client_id, "http://127.0.0.1/login", OAUTH_SCOPES.to_vec())
@@ -386,4 +400,36 @@ fn oauth_credentials(client_id: &str) -> Result<Credentials, Box<dyn std::error:
             .build()?;
     let token = client.get_access_token()?;
     Ok(Credentials::with_access_token(token.access_token))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn disconnected_session_exits_and_rejects_commands() {
+        let session = Session::new(SessionConfig::default(), None);
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(20),
+                wait_for_disconnect(&session),
+            )
+            .await
+            .is_err()
+        );
+        session.shutdown();
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            wait_for_disconnect(&session),
+        )
+        .await
+        .expect("invalid session should exit without waiting for Spirc");
+        let result = dispatch(
+            &Arc::new(Mutex::new(None)),
+            &session,
+            &tokio::runtime::Handle::current(),
+            "play",
+        );
+        assert_eq!(result.unwrap_err(), "Spotify connection lost; reconnecting");
+    }
 }
