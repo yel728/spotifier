@@ -7,6 +7,22 @@ from spotifierd.spotify import SpotifyAPI
 
 
 class PlaybackTests(unittest.TestCase):
+    def test_player_restart_clears_stale_track_and_notifies_clients(self) -> None:
+        playback = EventPlaybackState()
+        playback.apply({"PLAYER_EVENT": "track_changed", "URI": "spotify:track:old", "NAME": "Old track"})
+        playback.apply({"PLAYER_EVENT": "paused", "POSITION_MS": "200000"})
+        version, _ = playback.wait(-1, 0)
+        playback.apply({"PLAYER_EVENT": "player_reset"})
+        new_version, state = playback.wait(version, 0)
+        self.assertGreater(new_version, version)
+        self.assertEqual(state, normalize_playback(None))
+
+    def test_service_notification_does_not_clear_current_track(self) -> None:
+        playback = EventPlaybackState()
+        playback.apply({"PLAYER_EVENT": "track_changed", "URI": "spotify:track:current"})
+        playback.apply({"PLAYER_EVENT": "service_changed"})
+        self.assertEqual(playback.snapshot()["uri"], "spotify:track:current")
+
     def test_normalizes_web_api_playback(self) -> None:
         state = normalize_playback({
             "device": {"volume_percent": 49},

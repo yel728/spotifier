@@ -122,6 +122,10 @@ class EventPlaybackState:
                     else "Playlist" if event.get("REPEAT") == "true"
                     else "None"
                 )
+            elif name == "player_reset":
+                self._state = normalize_playback(None)
+                self._requested_uri = ""
+                self._position_updated = time.monotonic()
             elif name == "service_changed":
                 pass
             else:
@@ -276,6 +280,9 @@ class LibrespotSupervisor:
         return json.loads(self.request(f"lyrics {track_id}", timeout=10.0))
 
     def _spawn(self) -> None:
+        # A new player has no loaded track, even if the daemon survived.
+        if self.event_callback is not None:
+            self.event_callback({"PLAYER_EVENT": "player_reset"})
         self.login_url = ""
         cache_path = Path(self.config.player_cache)
         command = [str(PLAYER_BINARY_PATH)]
@@ -348,7 +355,7 @@ class LibrespotSupervisor:
         while not self.stopping.wait(2):
             if self.process is not None and self.process.poll() is not None:
                 if self.event_callback is not None:
-                    self.event_callback({"PLAYER_EVENT": "service_changed"})
+                    self.event_callback({"PLAYER_EVENT": "player_reset"})
                 print("librespot exited; restarting in 3s", file=sys.stderr)
                 if self.stopping.wait(3):
                     return
