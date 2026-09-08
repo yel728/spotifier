@@ -245,6 +245,25 @@ class SpotifyApiTests(unittest.TestCase):
         })
         self.assertEqual(api.player_request.call_count, 2)
 
+    def test_playlist_uses_account_market_and_omits_unavailable_tracks(self) -> None:
+        api = SpotifyAPI(Config(), Mock())
+        replacement = {"id": "playable", "uri": "spotify:track:playable", "is_playable": True,
+                       "linked_from": {"id": "original", "uri": "spotify:track:original"}}
+        api.player_request = Mock(side_effect=[
+            {"items": [
+                {"track": {"id": "unavailable", "is_playable": False}},
+                {"track": replacement},
+                {"track": None},
+            ], "next": "https://api.spotify.com/v1/next-page?market=from_token"},
+            {"items": [
+                {"track": {"id": "also-unavailable", "is_playable": False}},
+                {"track": {"id": "legacy"}},
+            ], "next": None},
+        ])
+        self.assertEqual(api.player_playlist("playlist-id")["tracks"],
+                         [{**replacement, "uri": "spotify:track:original"}, {"id": "legacy"}])
+        self.assertIn("market=from_token", api.player_request.call_args_list[0].args[0])
+
 
 if __name__ == "__main__":
     unittest.main()

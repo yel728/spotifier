@@ -261,6 +261,10 @@ fn event_payload(event: PlayerEvent) -> Option<Value> {
             put("PLAYER_EVENT", "stopped".into());
             put("TRACK_ID", track_id.to_id().ok()?);
         }
+        PlayerEvent::Unavailable { track_id, .. } => {
+            put("PLAYER_EVENT", "unavailable".into());
+            put("TRACK_ID", track_id.to_id().ok()?);
+        }
         PlayerEvent::VolumeChanged { volume } => {
             put("PLAYER_EVENT", "volume_changed".into());
             put("VOLUME", volume.to_string());

@@ -65,6 +65,7 @@ def normalize_playback(raw: dict[str, Any] | None) -> dict[str, Any]:
 class EventPlaybackState:
     def __init__(self) -> None:
         self._state = normalize_playback(None)
+        self._requested_uri = ""
         self._position_updated = time.monotonic()
         self._version = 0
         self._condition = threading.Condition()
@@ -72,7 +73,16 @@ class EventPlaybackState:
     def apply(self, event: dict[str, str]) -> None:
         name = event.get("PLAYER_EVENT", "")
         with self._condition:
-            if name == "track_changed":
+            if name == "load_requested":
+                self._requested_uri = event.get("URI", "")
+                self._state["playback_error"] = ""
+            elif name == "unavailable":
+                if self._requested_uri != f"spotify:track:{event.get('TRACK_ID', '')}":
+                    return
+                self._state["playback_error"] = (
+                    "The selected track is unavailable on Spotify. The player skipped it."
+                )
+            elif name == "track_changed":
                 covers = event.get("COVERS", "").splitlines()
                 self._state.update({
                     "has_track": True,
@@ -83,7 +93,6 @@ class EventPlaybackState:
                     "art_url": covers[0] if covers else "",
                     "length_s": self._seconds(event.get("DURATION_MS")),
                     "position_s": 0.0,
-                    "playback_error": "",
                 })
                 self._position_updated = time.monotonic()
             elif name in ("playing", "paused", "seeked", "position_correction"):
@@ -98,7 +107,9 @@ class EventPlaybackState:
                     self._state["status"] = "Paused"
                 self._position_updated = time.monotonic()
             elif name == "stopped":
+                error = self._state["playback_error"]
                 self._state = normalize_playback(None)
+                self._state["playback_error"] = error
                 self._position_updated = time.monotonic()
             elif name == "volume_changed":
                 volume = self._number(event.get("VOLUME"))
@@ -254,6 +265,8 @@ class LibrespotSupervisor:
             self.load_timer = None
         command = " ".join(part for part in ("load", track_uri, context_uri) if part)
         try:
+            if self.event_callback is not None:
+                self.event_callback({"PLAYER_EVENT": "load_requested", "URI": track_uri})
             self.command(command)
         except RuntimeError as error:
             print(f"player load failed: {error}")

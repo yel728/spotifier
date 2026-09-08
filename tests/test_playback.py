@@ -72,6 +72,22 @@ class PlaybackTests(unittest.TestCase):
             api.pause()
         request.assert_called_once_with("PUT", "/me/player/pause?device_id=device-1")
 
+    def test_unavailable_selection_remains_explained_after_skip(self) -> None:
+        playback = EventPlaybackState()
+        playback.apply({"PLAYER_EVENT": "load_requested", "URI": "spotify:track:selected"})
+        playback.apply({"PLAYER_EVENT": "unavailable", "TRACK_ID": "preloaded"})
+        self.assertEqual(playback.snapshot()["playback_error"], "")
+        playback.apply({"PLAYER_EVENT": "unavailable", "TRACK_ID": "selected"})
+        error = playback.snapshot()["playback_error"]
+        self.assertIn("unavailable", error)
+        playback.apply({"PLAYER_EVENT": "stopped"})
+        playback.apply({"PLAYER_EVENT": "track_changed", "TRACK_ID": "next", "NAME": "Next song"})
+        playback.apply({"PLAYER_EVENT": "playing", "TRACK_ID": "next", "POSITION_MS": "0"})
+        self.assertEqual(playback.snapshot()["playback_error"], error)
+        self.assertEqual(playback.snapshot()["title"], "Next song")
+        playback.apply({"PLAYER_EVENT": "load_requested", "URI": "spotify:track:another"})
+        self.assertEqual(playback.snapshot()["playback_error"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

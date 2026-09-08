@@ -116,13 +116,20 @@ class SpotifyAPI:
         return playlists
 
     def player_playlist(self, playlist_id: str) -> dict[str, Any]:
-        url = API + f"/playlists/{playlist_id}/tracks?limit=100"
+        # Request account-market availability and Spotify's playable replacements.
+        # Without a market, unavailable recordings have no is_playable flag.
+        url = API + f"/playlists/{playlist_id}/tracks?limit=100&market=from_token"
         tracks: list[dict[str, Any]] = []
         while url:
             page = self.player_request(url)
             for item in page.get("items", []):
                 track = (item or {}).get("track") or (item or {}).get("item")
-                if track:
+                if track and track.get("is_playable") is not False:
+                    # Select the playlist's original entry when Spotify relinks
+                    # its audio; the replacement URI may not exist in the context.
+                    original_uri = (track.get("linked_from") or {}).get("uri")
+                    if original_uri:
+                        track = {**track, "uri": original_uri}
                     tracks.append(track)
             url = str(page.get("next") or "")
         return {"tracks": tracks}
