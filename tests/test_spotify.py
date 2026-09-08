@@ -1,4 +1,6 @@
 import io
+import tempfile
+from pathlib import Path
 import unittest
 import urllib.error
 from threading import Event, Thread
@@ -10,6 +12,14 @@ from spotifierd.spotify import SpotifyAPI
 
 
 class SpotifyApiTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        for name in ("COLLECTION_CACHE_PATH", "ART_CACHE_PATH"):
+            patcher = patch("spotifierd.library." + name, Path(directory.name) / name)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     @patch("spotifierd.spotify.urllib.request.urlopen")
     def test_whitespace_only_success_response_is_empty(self, urlopen) -> None:
         response = MagicMock()

@@ -29,7 +29,7 @@ class Application:
         self.spotify = SpotifyAPI(config, self.oauth)
         self.library = Library(self.spotify)
         self.playback = EventPlaybackState()
-        self.librespot = LibrespotSupervisor(config, self.playback.apply)
+        self.librespot = LibrespotSupervisor(config, self.playback.apply, self.playback.snapshot)
         self.lyrics = Lyrics(spotify_fetcher=self.librespot.lyrics)
         self.mpris = None
 
@@ -78,6 +78,7 @@ class Application:
         self.oauth.logout()
         self.librespot.reset_credentials()
         self.invalidate()
+        self.library.invalidate(clear_collections=True)
 
     def play_pause(self) -> None:
         self.librespot.command("play_pause")

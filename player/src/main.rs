@@ -1,6 +1,9 @@
 use futures_util::StreamExt;
 use librespot::{
-    connect::{ConnectConfig, LoadRequest, LoadRequestOptions, PlayingTrack, Spirc},
+    connect::{
+        ConnectConfig, LoadContextOptions, LoadRequest, LoadRequestOptions, Options, PlayingTrack,
+        Spirc,
+    },
     core::{Session, SessionConfig, SpotifyId, authentication::Credentials, cache::Cache},
     discovery::Discovery,
     metadata::audio::UniqueFields,
@@ -153,6 +156,50 @@ fn dispatch(
                 LoadRequest::from_context_uri(uri, options)
             };
             spirc.activate().and_then(|_| spirc.load(request))
+        }
+        "restore" => {
+            let saved: Value = serde_json::from_str(
+                request
+                    .strip_prefix("restore ")
+                    .ok_or("missing recovery state")?,
+            )
+            .map_err(|error| error.to_string())?;
+            let uri = saved["uri"]
+                .as_str()
+                .ok_or("missing recovery uri")?
+                .to_owned();
+            let context = saved["context_uri"].as_str().unwrap_or("");
+            let mode = saved["repeat_mode"].as_str().unwrap_or("None");
+            let options = LoadRequestOptions {
+                start_playing: saved["playing"].as_bool().ok_or("missing playback state")?,
+                seek_to: saved["position_ms"]
+                    .as_u64()
+                    .ok_or("missing position")?
+                    .min(u32::MAX as u64) as u32,
+                context_options: Some(LoadContextOptions::Options(Options {
+                    shuffle: saved["shuffle"].as_bool().unwrap_or(false),
+                    repeat: mode == "Playlist",
+                    repeat_track: mode == "Track",
+                })),
+                playing_track: if context.is_empty() {
+                    None
+                } else {
+                    Some(PlayingTrack::Uri(uri.clone()))
+                },
+            };
+            let load = if context.is_empty() {
+                LoadRequest::from_tracks(vec![uri], options)
+            } else {
+                LoadRequest::from_context_uri(context.to_owned(), options)
+            };
+            let volume = saved["volume"]
+                .as_u64()
+                .ok_or("missing volume")?
+                .min(u16::MAX as u64) as u16;
+            spirc
+                .activate()
+                .and_then(|_| spirc.set_volume(volume))
+                .and_then(|_| spirc.load(load))
         }
         "repeat_mode" => {
             let mode = parts.next().ok_or("missing repeat mode")?;

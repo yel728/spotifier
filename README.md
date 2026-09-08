@@ -31,7 +31,7 @@ The daemon uses bounded in-memory TTL caches plus persistent collection snapshot
 | Synchronized lyrics | 24 hours |
 | Plain or missing lyrics | 15 minutes |
 
-Playlist and album snapshots are returned immediately, refreshed asynchronously, and rewritten only when normalized track data changes. Authentication invalidates every account-derived cache. Device-command failures invalidate the device cache. Bounded LRU eviction prevents searches, collections, or lyrics from growing memory without limit.
+Playlist and album snapshots are returned immediately, refreshed asynchronously, and rewritten only when normalized track data changes. Routine invalidation preserves collection snapshots; explicit logout clears account-derived caches. Device-command failures invalidate the device cache. Bounded LRU eviction prevents searches, collections, or lyrics from growing memory without limit.
 
 Opening the Lyrics tab asks the authenticated local `spotifier-player` session for Spotify's native lyric metadata first, preserving its line timestamps without a Web API or CLI request. When Spotify has no lyrics or only unsynchronized lyrics, the daemon tries LRCLIB's duration-sensitive exact lookup, then falls back to a title search. LRCLIB candidates must have synchronized lyrics, an exact normalized title, a duration within four seconds, and either a matching artist or an exact album. Artist, album, full artist credit, and nearest duration rank safe matches. The panel identifies the selected source above the lyrics. Every synchronized result is stored permanently in `~/.local/share/spotifier/lyrics.sqlite3`; later requests read it without contacting either provider.
 
@@ -131,3 +131,15 @@ curl -sS http://127.0.0.1:8765/api/health
 ```
 
 Machine-local configuration, tokens, generated systemd units, and caches are not stored in Git.
+
+When the supervised player exits unexpectedly, the daemon reloads the last active
+track once the replacement player connects. Recovery preserves playing/paused
+state, position, volume, shuffle/repeat, and the context selected in Spotifier.
+The recovery checkpoint survives repeated connection failures in the running
+daemon; it is not persisted across daemon shutdown or logout.
+
+Playlist and album track snapshots do not expire. Only 24 collections are kept
+in memory, but older snapshots stay on disk and reload immediately on access.
+Opening a cached collection refreshes it in the background; failed refreshes
+retain the previous list, and unchanged responses do not rewrite storage. Normal
+cache invalidation preserves these snapshots; explicit logout clears them.

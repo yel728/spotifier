@@ -163,9 +163,15 @@ class EventPlaybackState:
 
 
 class LibrespotSupervisor:
-    def __init__(self, config: Config, event_callback: Callable[[dict[str, str]], None] | None = None):
+    def __init__(self, config: Config, event_callback: Callable[[dict[str, str]], None] | None = None,
+                 snapshot_callback: Callable[[], dict[str, Any]] | None = None):
         self.config = config
         self.event_callback = event_callback
+        self.snapshot_callback = snapshot_callback
+        self.recovery: dict[str, Any] | None = None
+        self.context_uri = ""
+        self.player_ready = False
+        self.restore_sent = False
         self.process: subprocess.Popen[str] | None = None
         self.login_url = ""
         self.last_lines: list[str] = []
@@ -173,7 +179,7 @@ class LibrespotSupervisor:
         self.monitor_thread: threading.Thread | None = None
         self.event_socket: socket.socket | None = None
         self.event_thread: threading.Thread | None = None
-        self.load_lock = threading.Lock()
+        self.load_lock = threading.RLock()
         self.load_generation = 0
         self.load_timer: threading.Timer | None = None
 
@@ -196,6 +202,7 @@ class LibrespotSupervisor:
     def stop(self) -> None:
         self.stopping.set()
         with self.load_lock:
+            self.recovery = None
             self.load_generation += 1
             if self.load_timer is not None:
                 self.load_timer.cancel()
@@ -242,14 +249,25 @@ class LibrespotSupervisor:
         return response
 
     def command(self, value: str) -> None:
-        response = self.request(value)
-        if response != "ok":
-            raise RuntimeError(response or "Local playback command failed")
+        with self.load_lock:
+            if self.recovery is not None and not self.restore_sent:
+                if value in ("pause", "play", "play_pause"):
+                    playing = self.recovery["status"] == "Playing"
+                    self.recovery["status"] = "Playing" if (
+                        value == "play" or (value == "play_pause" and not playing)
+                    ) else "Paused"
+                    return
+            response = self.request(value)
+            if response != "ok":
+                raise RuntimeError(response or "Local playback command failed")
+            self.recovery = None
 
     def load(self, track_uri: str, context_uri: str = "") -> None:
         if not self.running:
             raise RuntimeError("Local Spotify player is not running")
         with self.load_lock:
+            self.recovery = None
+            self.context_uri = context_uri or (track_uri if not track_uri.startswith(("spotify:track:", "spotify:episode:")) else "")
             self.load_generation += 1
             generation = self.load_generation
             if self.load_timer is not None:
@@ -272,12 +290,47 @@ class LibrespotSupervisor:
             if self.event_callback is not None:
                 self.event_callback({"PLAYER_EVENT": "load_requested", "URI": track_uri})
             self.command(command)
-        except RuntimeError as error:
+        except (RuntimeError, OSError) as error:
             print(f"player load failed: {error}")
 
     def lyrics(self, track_uri: str) -> dict[str, Any]:
         track_id = track_uri.rsplit(":", 1)[-1]
         return json.loads(self.request(f"lyrics {track_id}", timeout=10.0))
+
+    def _remember_playback(self) -> None:
+        with self.load_lock:
+            if self.snapshot_callback is not None:
+                state = self.snapshot_callback()
+                if state["has_track"] and state["status"] in ("Playing", "Paused"):
+                    self.recovery = dict(state, context_uri=self.context_uri)
+            # Freeze the position across repeated failed reconnects.
+            self.player_ready = False
+            self.restore_sent = False
+
+    def _restore_playback(self) -> None:
+        with self.load_lock:
+            if self.stopping.is_set() or not self.player_ready or self.recovery is None or self.restore_sent:
+                return
+            state = self.recovery
+            payload = {
+                "uri": state["uri"],
+                "context_uri": state["context_uri"],
+                "position_ms": max(0, round(state["position_s"] * 1000)),
+                "playing": state["status"] == "Playing",
+                "volume": round(state["volume"] * 65535),
+                "shuffle": state["shuffle"],
+                "repeat_mode": state["repeat_mode"],
+            }
+            try:
+                response = self.request("restore " + json.dumps(payload))
+                if response != "ok":
+                    raise RuntimeError(response or "Playback recovery failed")
+            except (RuntimeError, OSError) as error:
+                print(f"player recovery failed; will retry: {error}", file=sys.stderr)
+                return
+            # Keep the checkpoint until a real playback event confirms the load.
+            self.restore_sent = True
+            print("restored last active track after player restart")
 
     def _spawn(self) -> None:
         # A new player has no loaded track, even if the daemon survived.
@@ -332,8 +385,11 @@ class LibrespotSupervisor:
                 return
             try:
                 event = {str(key): str(value) for key, value in json.loads(payload).items()}
-                if self.event_callback is not None:
-                    self.event_callback(event)
+                with self.load_lock:
+                    if self.event_callback is not None:
+                        self.event_callback(event)
+                    if event.get("PLAYER_EVENT") in ("playing", "paused"):
+                        self.recovery = None
             except (json.JSONDecodeError, TypeError, ValueError) as error:
                 print(f"invalid librespot event: {error}", file=sys.stderr)
 
@@ -345,6 +401,9 @@ class LibrespotSupervisor:
             line = line.rstrip()
             print(line)
             self.last_lines = (self.last_lines + [line])[-30:]
+            if line.startswith("spotifier-player ready:") and process is self.process:
+                self.player_ready = True
+                self._restore_playback()
             match = re.search(r"Browse to:\s*(https?://\S+)", line)
             if match:
                 self.login_url = match.group(1)
@@ -354,6 +413,7 @@ class LibrespotSupervisor:
     def _monitor(self) -> None:
         while not self.stopping.wait(2):
             if self.process is not None and self.process.poll() is not None:
+                self._remember_playback()
                 if self.event_callback is not None:
                     self.event_callback({"PLAYER_EVENT": "player_reset"})
                 print("librespot exited; restarting in 3s", file=sys.stderr)
@@ -361,6 +421,8 @@ class LibrespotSupervisor:
                     return
                 self._terminate_stale_process()
                 self._spawn()
+            elif self.player_ready:
+                self._restore_playback()
 
     def _terminate_stale_process(self) -> None:
         try:

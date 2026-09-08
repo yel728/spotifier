@@ -76,6 +76,14 @@ class SpotifyCacheTests(unittest.TestCase):
 
 
 class LibraryCacheTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        for name in ("COLLECTION_CACHE_PATH", "ART_CACHE_PATH"):
+            patcher = patch("spotifierd.library." + name, Path(directory.name) / name)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def test_search_cache_normalizes_queries_and_invalidates(self) -> None:
         spotify = Mock()
         spotify.search.return_value = {"tracks": {"items": []}}

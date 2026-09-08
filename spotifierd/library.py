@@ -46,7 +46,7 @@ class Library:
         self.lock = threading.RLock()
         self.executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="spotifier-library")
         for key, items in self._load_collection_cache().items():
-            self.playlist_cache.set(key, items, 600.0)
+            self.playlist_cache.set(key, items, float("inf"))
 
     def playlists(self) -> list[dict[str, Any]]:
         cached = self.playlists_cache.get("all")
@@ -77,19 +77,20 @@ class Library:
 
     def tracks(self, uri: str) -> tuple[list[dict[str, Any]], bool, bool, str]:
         cache_key = collection_key(uri)
-        cached = self.playlist_cache.get(cache_key, stale=True)
+        cached = self._cached_collection(cache_key)
         if cached is not None:
             self._schedule_collection_refresh(uri)
             items, art_pending, _, version = self._track_result(cache_key, cached.value)
             return items, art_pending, True, version
 
         items, missing = self._fetch_tracks(uri)
-        self._store_tracks(cache_key, items, missing)
+        with self.lock:
+            self._store_tracks(cache_key, items, missing)
         return self._track_result(cache_key, items)
 
     def cached_tracks(self, uri: str) -> tuple[list[dict[str, Any]], bool, bool, str]:
         cache_key = collection_key(uri)
-        cached = self.playlist_cache.get(cache_key, stale=True)
+        cached = self._cached_collection(cache_key)
         return self._track_result(cache_key, cached.value if cached is not None else [])
 
     def search(self, query: str) -> list[dict[str, Any]]:
@@ -140,14 +141,25 @@ class Library:
     def close(self) -> None:
         self.executor.shutdown(wait=False, cancel_futures=True)
 
-    def invalidate(self) -> None:
+    def invalidate(self, *, clear_collections: bool = False) -> None:
         self.playlists_cache.clear()
-        self.playlist_cache.clear()
         self.search_cache.clear()
         with self.lock:
             self.collection_generation += 1
             self.refresh_pending.clear()
-            COLLECTION_CACHE_PATH.unlink(missing_ok=True)
+            if clear_collections:
+                self.playlist_cache.clear()
+                COLLECTION_CACHE_PATH.unlink(missing_ok=True)
+
+    def _cached_collection(self, cache_key: str):
+        with self.lock:
+            cached = self.playlist_cache.get(cache_key, stale=True)
+            if cached is None:
+                items = self._load_collection_cache().get(cache_key)
+                if items is not None:
+                    self.playlist_cache.set(cache_key, items, float("inf"))
+                    cached = self.playlist_cache.get(cache_key, stale=True)
+            return cached
 
     def _fetch_tracks(self, uri: str) -> tuple[list[dict[str, Any]], dict[str, str]]:
         item_id = spotify_id(uri)
@@ -156,6 +168,8 @@ class Library:
             if collection_kind(uri) == "album"
             else self.spotify.player_playlist(item_id)
         )
+        if not isinstance(raw, dict) or not isinstance(raw.get("tracks"), list):
+            raise ValueError("Collection response has no complete track list")
         items: list[dict[str, Any]] = []
         missing: dict[str, str] = {}
         with self.lock:
@@ -189,10 +203,10 @@ class Library:
         items: list[dict[str, Any]],
         missing: dict[str, str],
     ) -> bool:
-        cached = self.playlist_cache.get(cache_key, stale=True)
+        cached = self._cached_collection(cache_key)
         changed = cached is None or cached.value != items
         if changed:
-            self.playlist_cache.set(cache_key, items, 600.0)
+            self.playlist_cache.set(cache_key, items, float("inf"))
             self._save_collection_cache()
         for album_id, track_uri in missing.items():
             self._schedule_art(album_id, track_uri)
@@ -218,7 +232,8 @@ class Library:
             pass
         finally:
             with self.lock:
-                self.refresh_pending.discard(cache_key)
+                if generation == self.collection_generation:
+                    self.refresh_pending.discard(cache_key)
 
     def _track_result(
         self,
@@ -304,7 +319,9 @@ class Library:
 
     def _save_collection_cache(self) -> None:
         with self.lock:
-            collections = dict(self.playlist_cache.items(stale=True))
+            # Memory remains bounded; eviction must never remove a disk snapshot.
+            collections = self._load_collection_cache()
+            collections.update(self.playlist_cache.items(stale=True))
             COLLECTION_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
             temporary = COLLECTION_CACHE_PATH.with_suffix(".tmp")
             temporary.write_text(json.dumps(collections, ensure_ascii=False) + "\n")
