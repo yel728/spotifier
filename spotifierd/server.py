@@ -31,11 +31,21 @@ class Application:
         self.playback = EventPlaybackState()
         self.librespot = LibrespotSupervisor(config, self.playback.apply)
         self.lyrics = Lyrics(spotify_fetcher=self.librespot.lyrics)
+        self.mpris = None
 
     def start(self) -> None:
+        from .mpris import MprisService
         self.librespot.start()
+        self.mpris = MprisService(self)
+        try:
+            self.mpris.start()
+        except Exception:
+            self.close()
+            raise
 
     def close(self) -> None:
+        if self.mpris is not None:
+            self.mpris.stop()
         self.librespot.stop()
         self.oauth.close()
         self.library.close()

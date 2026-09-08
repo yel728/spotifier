@@ -1,2 +1,2 @@
-# Runtime is Python stdlib-only.
-# System packages required: librespot, playerctl, quickshell
+# Desktop media controls use system Python bindings: python-dbus, python-gobject.
+# Other system packages: playerctl, quickshell, bluez-utils (mpris-proxy).

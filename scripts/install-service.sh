@@ -6,6 +6,11 @@ template="$project_dir/systemd/spotifierd.service.in"
 unit_dir="$HOME/.config/systemd/user"
 unit="$unit_dir/spotifierd.service"
 
+python -c 'import dbus; from gi.repository import GLib' || {
+  printf 'Install python-dbus and python-gobject for desktop media controls\n' >&2
+  exit 1
+}
+
 command -v cargo >/dev/null || {
   printf 'cargo is required to build the local Spotifier player\n' >&2
   exit 1

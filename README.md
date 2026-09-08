@@ -61,6 +61,13 @@ Shortcuts are active only while the Spotifier popup is open. Typing shortcuts ar
 - Rust 1.85+ with Cargo
 - `spotify_player`
 - Spotify Premium
+- `python-dbus`, `python-gobject`, and `bluez-utils` for desktop/headset controls
+
+Spotifier exposes `org.mpris.MediaPlayer2.spotifier` on the user D-Bus session.
+Desktop media keys and the Bluetooth `mpris-proxy.service` forward play/pause,
+next, and previous to the same local player used by the widget. The installer
+enables the Bluetooth proxy and keeps Omarchy's media-control service loaded.
+Playback status and track metadata come from the daemon's local event state.
 
 ## Spotify authorization
 

@@ -59,7 +59,9 @@ There is exactly one playback session design:
 4. Spotify Web API is the only playback-state and transport authority.
 5. Every playback mutation includes the exact `Spotifier` device ID.
 6. `spotify_player` is read-only and used only for playlist discovery and playlist contents.
-7. MPRIS/playerctl is not part of the playback control path.
+7. MPRIS is an inbound desktop/headset control interface. It forwards commands to
+   the existing local player socket and publishes local event state; it must not
+   create a second playback session or use playerctl as an outbound controller.
 
 Do not add fallback playback commands. Multiple control authorities caused duplicate sessions and audio that could not be stopped.
 

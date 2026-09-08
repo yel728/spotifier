@@ -36,7 +36,8 @@ if not any(isinstance(item, dict) and item.get('id')=='yel728.spotifier' for sec
     idx=next((i+1 for i,item in enumerate(left) if isinstance(item, dict) and item.get('id')=='omarchy.workspaces'), len(left))
     left.insert(idx, {'id':'yel728.spotifier'})
 disabled=data.setdefault('disabledPlugins',[])
-for pid in ('omarchy.media','yel728.media'):
+disabled[:]=[pid for pid in disabled if pid != 'omarchy.media']
+for pid in ('yel728.media',):
     if pid not in disabled:
         disabled.append(pid)
 p.write_text(json.dumps(data, indent=2)+"\n")
@@ -44,6 +45,7 @@ PY
 fi
 
 "$repo_dir/scripts/install-service.sh"
+systemctl --user enable --now mpris-proxy.service
 
 if command -v omarchy >/dev/null; then
   omarchy restart shell >/dev/null 2>&1 || true
