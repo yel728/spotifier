@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import signal
@@ -26,6 +27,7 @@ def normalize_playback(raw: dict[str, Any] | None) -> dict[str, Any]:
         return {
             "has_track": False,
             "track_loaded": False,
+            "context_uri": "",
             "uri": "",
             "title": "",
             "artist": "",
@@ -50,6 +52,7 @@ def normalize_playback(raw: dict[str, Any] | None) -> dict[str, Any]:
     return {
         "has_track": bool(item),
         "track_loaded": bool(item),
+        "context_uri": str((raw.get("context") or {}).get("uri") or ""),
         "uri": item.get("uri", ""),
         "title": item.get("name", ""),
         "artist": ", ".join(artist.get("name", "") for artist in item.get("artists", [])),
@@ -78,6 +81,13 @@ class EventPlaybackState:
             if name == "load_requested":
                 self._requested_uri = event.get("URI", "")
                 self._state["playback_error"] = ""
+            elif name == "context_changed":
+                self._state["context_uri"] = event.get("CONTEXT_URI", "")
+            elif name == "selection_restored":
+                self._state.update(json.loads(event["STATE"]))
+                self._state["track_loaded"] = False
+                self._state["status"] = "Paused"
+                self._position_updated = time.monotonic()
             elif name == "unavailable":
                 if self._requested_uri != f"spotify:track:{event.get('TRACK_ID', '')}":
                     return
@@ -175,10 +185,12 @@ class EventPlaybackState:
 
 class LibrespotSupervisor:
     def __init__(self, config: Config, event_callback: Callable[[dict[str, str]], None] | None = None,
-                 snapshot_callback: Callable[[], dict[str, Any]] | None = None):
+                 snapshot_callback: Callable[[], dict[str, Any]] | None = None,
+                 checkpoint_path: Path | None = None):
         self.config = config
         self.event_callback = event_callback
         self.snapshot_callback = snapshot_callback
+        self.checkpoint_path = checkpoint_path
         self.recovery: dict[str, Any] | None = None
         self.context_uri = ""
         self.player_ready = False
@@ -208,6 +220,7 @@ class LibrespotSupervisor:
         self.stopping.clear()
         self._start_event_listener()
         self._terminate_stale_process()
+        self._load_checkpoint()
         self._spawn()
         self.monitor_thread = threading.Thread(target=self._monitor, name="librespot-monitor", daemon=True)
         self.monitor_thread.start()
@@ -215,6 +228,7 @@ class LibrespotSupervisor:
     def stop(self) -> None:
         self.stopping.set()
         with self.load_lock:
+            self._save_checkpoint()
             self.recovery = None
             self.load_generation += 1
             if self.load_timer is not None:
@@ -242,6 +256,9 @@ class LibrespotSupervisor:
 
     def reset_credentials(self) -> None:
         self.stop()
+        self.context_uri = ""
+        if self.checkpoint_path is not None:
+            self.checkpoint_path.unlink(missing_ok=True)
         if self.event_callback is not None:
             self.event_callback({"PLAYER_EVENT": "clear_selection"})
         (Path(self.config.player_cache) / "credentials.json").unlink(missing_ok=True)
@@ -292,7 +309,6 @@ class LibrespotSupervisor:
             raise RuntimeError("Local Spotify player is not running")
         with self.load_lock:
             self.recovery = None
-            self.context_uri = context_uri or (track_uri if not track_uri.startswith(("spotify:track:", "spotify:episode:")) else "")
             self.load_generation += 1
             generation = self.load_generation
             if self.load_timer is not None:
@@ -310,13 +326,67 @@ class LibrespotSupervisor:
             if generation != self.load_generation:
                 return
             self.load_timer = None
-        command = " ".join(part for part in ("load", track_uri, context_uri) if part)
+            command = " ".join(part for part in ("load", track_uri, context_uri) if part)
+            try:
+                if self.event_callback is not None:
+                    self.event_callback({"PLAYER_EVENT": "load_requested", "URI": track_uri})
+                self.command(command)
+                self.context_uri = context_uri or (
+                    track_uri if not track_uri.startswith(("spotify:track:", "spotify:episode:")) else "")
+                if self.event_callback is not None:
+                    self.event_callback({"PLAYER_EVENT": "context_changed", "CONTEXT_URI": self.context_uri})
+            except (RuntimeError, OSError) as error:
+                print(f"player load failed: {error}")
+
+    def _save_checkpoint(self) -> None:
+        if self.checkpoint_path is None or self.snapshot_callback is None:
+            return
+        state = self.recovery or dict(self.snapshot_callback(), context_uri=self.context_uri)
+        if not state["has_track"]:
+            return
         try:
+            self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.checkpoint_path.with_suffix(".tmp")
+            with temporary.open("w") as file:
+                json.dump({"version": 1, "state": state}, file, ensure_ascii=False)
+            temporary.chmod(0o600)
+            temporary.replace(self.checkpoint_path)
+        except OSError as error:
+            print(f"could not save playback session: {error}", file=sys.stderr)
+
+    def _load_checkpoint(self) -> None:
+        if self.checkpoint_path is None:
+            return
+        try:
+            saved = json.loads(self.checkpoint_path.read_text())
+            state = saved["state"]
+            if saved["version"] != 1 or not isinstance(state, dict):
+                raise ValueError("unsupported checkpoint")
+            if not state.get("has_track") or not state["uri"].startswith(("spotify:track:", "spotify:episode:")):
+                raise ValueError("invalid saved track")
+            context = state["context_uri"]
+            if not isinstance(context, str) or (context and not context.startswith("spotify:")):
+                raise ValueError("invalid saved context")
+            if state["status"] not in ("Playing", "Paused") or state["repeat_mode"] not in ("None", "Playlist", "Track"):
+                raise ValueError("invalid playback mode")
+            if not isinstance(state["shuffle"], bool):
+                raise ValueError("invalid shuffle mode")
+            for key in ("position_s", "length_s", "volume"):
+                if not isinstance(state[key], (int, float)) or not math.isfinite(state[key]) or state[key] < 0:
+                    raise ValueError("invalid playback position or volume")
+            if state["volume"] > 1:
+                raise ValueError("invalid volume")
+            state = {key: state.get(key, value) for key, value in normalize_playback(None).items()}
+            self.recovery = state
+            self.context_uri = context
+            self.restore_sent = False
+            self.restore_attempts = 0
             if self.event_callback is not None:
-                self.event_callback({"PLAYER_EVENT": "load_requested", "URI": track_uri})
-            self.command(command)
-        except (RuntimeError, OSError) as error:
-            print(f"player load failed: {error}")
+                self.event_callback({"PLAYER_EVENT": "selection_restored", "STATE": json.dumps(state)})
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+            print(f"could not read saved playback session: {error}", file=sys.stderr)
 
     def lyrics(self, track_uri: str) -> dict[str, Any]:
         track_id = track_uri.rsplit(":", 1)[-1]
@@ -328,6 +398,7 @@ class LibrespotSupervisor:
                 state = self.snapshot_callback()
                 if self.recovery is None and state["has_track"] and state["status"] in ("Playing", "Paused"):
                     self.recovery = dict(state, context_uri=self.context_uri)
+            self._save_checkpoint()
             # Freeze the position across repeated failed reconnects.
             self.player_ready = False
             self.restore_sent = False
@@ -441,8 +512,24 @@ class LibrespotSupervisor:
                 expected = "playing" if self.recovery["status"] == "Playing" else "paused"
                 if (event.get("PLAYER_EVENT") == expected
                         and event.get("TRACK_ID") == self.recovery["uri"].rsplit(":", 1)[-1]):
-                    print("last-track recovery confirmed by player")
+                    # Activation emits the device's old default settings before
+                    # LoadRequest applies the saved options, without new option events.
+                    # A matching playback event confirms that load has completed.
+                    saved = self.recovery
+                    self.context_uri = saved["context_uri"]
+                    if self.event_callback is not None:
+                        self.event_callback({"PLAYER_EVENT": "context_changed", "CONTEXT_URI": self.context_uri})
+                        self.event_callback({"PLAYER_EVENT": "shuffle_changed", "SHUFFLE": str(saved["shuffle"]).lower()})
+                        self.event_callback({"PLAYER_EVENT": "repeat_changed",
+                            "REPEAT": str(saved["repeat_mode"] == "Playlist").lower(),
+                            "REPEAT_TRACK": str(saved["repeat_mode"] == "Track").lower()})
+                    print("last-track recovery confirmed with context, shuffle and repeat")
                     self.recovery = None
+            if event.get("PLAYER_EVENT") in (
+                "track_changed", "playing", "paused", "seeked", "position_correction",
+                "volume_changed", "shuffle_changed", "repeat_changed", "stopped", "session_disconnected",
+            ):
+                self._save_checkpoint()
 
     def _capture_output(self) -> None:
         process = self.process

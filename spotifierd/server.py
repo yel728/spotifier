@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import signal
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -29,7 +30,10 @@ class Application:
         self.spotify = SpotifyAPI(config, self.oauth)
         self.library = Library(self.spotify)
         self.playback = EventPlaybackState()
-        self.librespot = LibrespotSupervisor(config, self.playback.apply, self.playback.snapshot)
+        self.librespot = LibrespotSupervisor(
+            config, self.playback.apply, self.playback.snapshot,
+            Path(config.player_cache).expanduser().parent / "playback.json",
+        )
         self.lyrics = Lyrics(spotify_fetcher=self.librespot.lyrics)
         self.mpris = None
 

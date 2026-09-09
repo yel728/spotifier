@@ -135,8 +135,9 @@ Machine-local configuration, tokens, generated systemd units, and caches are not
 When the supervised player exits unexpectedly, the daemon reloads the last active
 track once the replacement player connects. Recovery preserves playing/paused
 state, position, volume, shuffle/repeat, and the context selected in Spotifier.
-The recovery checkpoint survives repeated connection failures in the running
-daemon; it is not persisted across daemon shutdown or logout.
+The complete recovery checkpoint (track, playlist/album context, position,
+playing/paused state, volume, shuffle and repeat) is saved locally and restored
+after daemon restarts as well as player restarts. Logout removes it.
 
 Playlist and album track snapshots do not expire. Only 24 collections are kept
 in memory, but older snapshots stay on disk and reload immediately on access.
