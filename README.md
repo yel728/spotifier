@@ -143,3 +143,9 @@ in memory, but older snapshots stay on disk and reload immediately on access.
 Opening a cached collection refreshes it in the background; failed refreshes
 retain the previous list, and unchanged responses do not rewrite storage. Normal
 cache invalidation preserves these snapshots; explicit logout clears them.
+
+If Spotify stops or deactivates the device while the player process stays alive,
+Spotifier retains the last selection and position. Play reactivates the device
+and reloads that selection. A deactivation never automatically steals playback
+back from another device. Recovery is confirmed by playback events; an accepted
+socket command alone is not reported as successful recovery.

@@ -64,7 +64,7 @@ class RecoveryTests(unittest.TestCase):
         self.daemon._remember_playback()
         self.daemon._restore_playback()
         self.daemon.request.assert_not_called()
-        self.state.apply({'PLAYER_EVENT': 'stopped'})
+        self.state.apply({'PLAYER_EVENT': 'clear_selection'})
         self.daemon.recovery = None
         self.restart()
         self.daemon.request.assert_not_called()

@@ -15,6 +15,7 @@ Item {
   property bool statusPending: false
   property int emptyPlaybackPolls: 0
 
+  property bool trackLoaded: false
   property bool hasTrack: false
   property string trackUri: ""
   property string title: ""
@@ -128,6 +129,7 @@ Item {
     root.streamingReady = !!state.streaming_ready
     root.streamingLoginUrl = state.streaming_login_url || ""
     root.playbackError = state.playback_error || ""
+    root.trackLoaded = !!state.track_loaded
     root.hasTrack = !!state.has_track
     root.trackUri = state.uri || ""
     root.title = state.title || ""
@@ -136,7 +138,7 @@ Item {
     root.artUrl = state.art_url || ""
     var reportedStatus = state.status || "Stopped"
     if (root.playbackStatusTarget !== "") {
-      if (reportedStatus === root.playbackStatusTarget || root.actionError !== "") {
+      if (reportedStatus === root.playbackStatusTarget || root.actionError !== "" || root.playbackError !== "") {
         root.playbackStatus = reportedStatus
         root.playbackStatusTarget = ""
         root.playbackStatusTargetPolls = 0
@@ -196,6 +198,7 @@ Item {
     repeatModeTarget = ""
     repeatModeTargetPolls = 0
     hasTrack = false
+    trackLoaded = false
     trackUri = ""
     title = ""
     artist = ""
@@ -527,6 +530,7 @@ Item {
         loggedIn: root.loggedIn,
         libraryLoggedIn: root.libraryLoggedIn,
         streamingReady: root.streamingReady,
+        trackLoaded: root.trackLoaded,
         title: root.title,
         status: root.playbackStatus,
         volume: root.volume,

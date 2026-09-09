@@ -22,7 +22,7 @@ class MprisTests(unittest.TestCase):
             self.player.app.librespot.command.assert_called_with(command)
 
     def test_idle_controls_do_not_start_another_session(self):
-        self.state.apply({"PLAYER_EVENT": "stopped"})
+        self.state.apply({"PLAYER_EVENT": "clear_selection"})
         self.player.PlayPause()
         self.player.app.librespot.command.assert_not_called()
 

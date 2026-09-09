@@ -25,6 +25,7 @@ def normalize_playback(raw: dict[str, Any] | None) -> dict[str, Any]:
     if not raw:
         return {
             "has_track": False,
+            "track_loaded": False,
             "uri": "",
             "title": "",
             "artist": "",
@@ -48,6 +49,7 @@ def normalize_playback(raw: dict[str, Any] | None) -> dict[str, Any]:
     }.get(str(raw.get("repeat_state") or ""), "None")
     return {
         "has_track": bool(item),
+        "track_loaded": bool(item),
         "uri": item.get("uri", ""),
         "title": item.get("name", ""),
         "artist": ", ".join(artist.get("name", "") for artist in item.get("artists", [])),
@@ -101,16 +103,29 @@ class EventPlaybackState:
                     self._state["has_track"] = True
                 if event.get("POSITION_MS") is not None:
                     self._state["position_s"] = self._seconds(event.get("POSITION_MS"))
+                if name in ("playing", "paused"):
+                    self._state["track_loaded"] = True
                 if name == "playing":
                     self._state["status"] = "Playing"
                 elif name == "paused":
                     self._state["status"] = "Paused"
                 self._position_updated = time.monotonic()
-            elif name == "stopped":
-                error = self._state["playback_error"]
-                self._state = normalize_playback(None)
-                self._state["playback_error"] = error
+            elif name in ("stopped", "session_disconnected", "player_reset"):
+                # A stopped/deactivated device can still have a resumable selection.
+                # Freeze its position instead of erasing metadata and controls.
+                if name == "stopped" and event.get("TRACK_ID"):
+                    if self._state["uri"].rsplit(":", 1)[-1] != event["TRACK_ID"]:
+                        return
+                self._state = self.snapshot()
+                self._state["track_loaded"] = False
+                self._state["status"] = "Paused" if self._state["has_track"] else "Stopped"
                 self._position_updated = time.monotonic()
+            elif name == "clear_selection":
+                self._state = normalize_playback(None)
+                self._requested_uri = ""
+                self._position_updated = time.monotonic()
+            elif name == "recovery_failed":
+                self._state["playback_error"] = event.get("ERROR", "Unable to restore playback")
             elif name == "volume_changed":
                 volume = self._number(event.get("VOLUME"))
                 self._state["volume"] = max(0.0, min(1.0, volume / 65535 if volume > 1 else volume))
@@ -122,10 +137,6 @@ class EventPlaybackState:
                     else "Playlist" if event.get("REPEAT") == "true"
                     else "None"
                 )
-            elif name == "player_reset":
-                self._state = normalize_playback(None)
-                self._requested_uri = ""
-                self._position_updated = time.monotonic()
             elif name == "service_changed":
                 pass
             else:
@@ -172,6 +183,8 @@ class LibrespotSupervisor:
         self.context_uri = ""
         self.player_ready = False
         self.restore_sent = False
+        self.restore_requested_at = 0.0
+        self.restore_attempts = 0
         self.process: subprocess.Popen[str] | None = None
         self.login_url = ""
         self.last_lines: list[str] = []
@@ -229,6 +242,8 @@ class LibrespotSupervisor:
 
     def reset_credentials(self) -> None:
         self.stop()
+        if self.event_callback is not None:
+            self.event_callback({"PLAYER_EVENT": "clear_selection"})
         (Path(self.config.player_cache) / "credentials.json").unlink(missing_ok=True)
         self.start()
 
@@ -250,6 +265,16 @@ class LibrespotSupervisor:
 
     def command(self, value: str) -> None:
         with self.load_lock:
+            state = self.snapshot_callback() if self.snapshot_callback is not None else None
+            if (self.recovery is None and state and state["has_track"]
+                    and not state["track_loaded"] and value in ("play", "play_pause", "pause")):
+                if value == "pause":
+                    return
+                self.recovery = dict(state, context_uri=self.context_uri, status="Playing")
+                self.restore_sent = False
+                self.restore_attempts = 0
+                self._restore_playback()
+                return
             if self.recovery is not None and not self.restore_sent:
                 if value in ("pause", "play", "play_pause"):
                     playing = self.recovery["status"] == "Playing"
@@ -301,16 +326,29 @@ class LibrespotSupervisor:
         with self.load_lock:
             if self.snapshot_callback is not None:
                 state = self.snapshot_callback()
-                if state["has_track"] and state["status"] in ("Playing", "Paused"):
+                if self.recovery is None and state["has_track"] and state["status"] in ("Playing", "Paused"):
                     self.recovery = dict(state, context_uri=self.context_uri)
             # Freeze the position across repeated failed reconnects.
             self.player_ready = False
             self.restore_sent = False
+            self.restore_attempts = 0
 
     def _restore_playback(self) -> None:
         with self.load_lock:
-            if self.stopping.is_set() or not self.player_ready or self.recovery is None or self.restore_sent:
+            if self.stopping.is_set() or not self.player_ready or self.recovery is None:
                 return
+            if self.restore_sent:
+                if time.monotonic() - self.restore_requested_at < 15:
+                    return
+                if self.restore_attempts >= 3:
+                    if self.event_callback is not None:
+                        self.event_callback({"PLAYER_EVENT": "recovery_failed", "ERROR":
+                            "Spotify did not confirm playback. Press Play to retry."})
+                    print("playback recovery timed out without a player confirmation", file=sys.stderr)
+                    self.recovery = None
+                    self.restore_sent = False
+                    return
+                self.restore_sent = False
             state = self.recovery
             payload = {
                 "uri": state["uri"],
@@ -322,6 +360,8 @@ class LibrespotSupervisor:
                 "repeat_mode": state["repeat_mode"],
             }
             try:
+                if self.event_callback is not None:
+                    self.event_callback({"PLAYER_EVENT": "load_requested", "URI": state["uri"]})
                 response = self.request("restore " + json.dumps(payload))
                 if response != "ok":
                     raise RuntimeError(response or "Playback recovery failed")
@@ -330,7 +370,9 @@ class LibrespotSupervisor:
                 return
             # Keep the checkpoint until a real playback event confirms the load.
             self.restore_sent = True
-            print("restored last active track after player restart")
+            self.restore_requested_at = time.monotonic()
+            self.restore_attempts += 1
+            print("requested last-track recovery; waiting for playback confirmation")
 
     def _spawn(self) -> None:
         # A new player has no loaded track, even if the daemon survived.
@@ -385,13 +427,22 @@ class LibrespotSupervisor:
                 return
             try:
                 event = {str(key): str(value) for key, value in json.loads(payload).items()}
-                with self.load_lock:
-                    if self.event_callback is not None:
-                        self.event_callback(event)
-                    if event.get("PLAYER_EVENT") in ("playing", "paused"):
-                        self.recovery = None
+                self._handle_event(event)
             except (json.JSONDecodeError, TypeError, ValueError) as error:
                 print(f"invalid librespot event: {error}", file=sys.stderr)
+
+    def _handle_event(self, event: dict[str, str]) -> None:
+        with self.load_lock:
+            if event.get("PLAYER_EVENT") in ("stopped", "session_disconnected"):
+                print(f"player event: {event['PLAYER_EVENT']}; retaining last track")
+            if self.event_callback is not None:
+                self.event_callback(event)
+            if self.recovery is not None and self.restore_sent:
+                expected = "playing" if self.recovery["status"] == "Playing" else "paused"
+                if (event.get("PLAYER_EVENT") == expected
+                        and event.get("TRACK_ID") == self.recovery["uri"].rsplit(":", 1)[-1]):
+                    print("last-track recovery confirmed by player")
+                    self.recovery = None
 
     def _capture_output(self) -> None:
         process = self.process

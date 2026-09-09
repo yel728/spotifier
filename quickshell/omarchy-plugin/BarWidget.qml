@@ -497,7 +497,9 @@ BarWidget {
 
               Text {
                 id: connectionState
-                text: root.online ? "● ONLINE" : "○ OFFLINE"
+                text: !root.online ? "○ OFFLINE"
+                  : !root.spotifier.streamingReady ? "○ CONNECTING"
+                  : root.spotifier.trackLoaded ? "● READY" : "○ IDLE"
                 color: root.online ? Color.accent : root.mutedColor()
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.caption

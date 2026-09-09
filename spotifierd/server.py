@@ -69,7 +69,7 @@ class Application:
             "logged_in": logged_in,
             "library_logged_in": logged_in,
             "device_name": self.config.device_name,
-            "streaming_ready": self.librespot.running,
+            "streaming_ready": bool(self.librespot.running and self.librespot.player_ready),
             "streaming_login_url": self.librespot.login_url,
         })
         return state

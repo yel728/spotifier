@@ -7,7 +7,7 @@ from spotifierd.spotify import SpotifyAPI
 
 
 class PlaybackTests(unittest.TestCase):
-    def test_player_restart_clears_stale_track_and_notifies_clients(self) -> None:
+    def test_player_restart_retains_selection_and_notifies_clients(self) -> None:
         playback = EventPlaybackState()
         playback.apply({"PLAYER_EVENT": "track_changed", "URI": "spotify:track:old", "NAME": "Old track"})
         playback.apply({"PLAYER_EVENT": "paused", "POSITION_MS": "200000"})
@@ -15,7 +15,10 @@ class PlaybackTests(unittest.TestCase):
         playback.apply({"PLAYER_EVENT": "player_reset"})
         new_version, state = playback.wait(version, 0)
         self.assertGreater(new_version, version)
-        self.assertEqual(state, normalize_playback(None))
+        self.assertEqual(state["uri"], "spotify:track:old")
+        self.assertEqual(state["position_s"], 200)
+        self.assertEqual(state["status"], "Paused")
+        self.assertFalse(state["track_loaded"])
 
     def test_service_notification_does_not_clear_current_track(self) -> None:
         playback = EventPlaybackState()
@@ -80,7 +83,8 @@ class PlaybackTests(unittest.TestCase):
         self.assertEqual(state["repeat_mode"], "Playlist")
 
         playback.apply({"PLAYER_EVENT": "stopped", "TRACK_ID": "track-id"})
-        self.assertFalse(playback.snapshot()["has_track"])
+        self.assertTrue(playback.snapshot()["has_track"])
+        self.assertFalse(playback.snapshot()["track_loaded"])
 
     def test_pause_targets_only_configured_device(self) -> None:
         api = SpotifyAPI(Config(device_name="Spotifier"), Mock())

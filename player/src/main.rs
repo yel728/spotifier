@@ -137,6 +137,7 @@ fn dispatch(
     let guard = handle.lock().map_err(|_| "control lock poisoned")?;
     let spirc = guard.as_ref().ok_or("player is not connected")?;
     let result = match command {
+        "disconnect" => spirc.disconnect(true),
         "play" => spirc.play(),
         "pause" => spirc.pause(),
         "play_pause" => spirc.play_pause(),
@@ -304,6 +305,9 @@ fn event_payload(event: PlayerEvent) -> Option<Value> {
             position_ms,
             ..
         } => position_event(&mut data, "position_correction", track_id, position_ms)?,
+        PlayerEvent::SessionDisconnected { .. } => {
+            put("PLAYER_EVENT", "session_disconnected".into());
+        }
         PlayerEvent::Stopped { track_id, .. } => {
             put("PLAYER_EVENT", "stopped".into());
             put("TRACK_ID", track_id.to_id().ok()?);
@@ -500,6 +504,16 @@ mod tests {
             "play",
         );
         assert_eq!(result.unwrap_err(), "Spotify connection lost; reconnecting");
+    }
+
+    #[test]
+    fn device_deactivation_is_relayed_without_exposing_account_details() {
+        let event = event_payload(PlayerEvent::SessionDisconnected {
+            connection_id: "test-connection".into(),
+            user_name: "test-user".into(),
+        })
+        .unwrap();
+        assert_eq!(event, json!({"PLAYER_EVENT": "session_disconnected"}));
     }
 
     // Exercise the real libmdns blocking worker on the same runtime flavor as
