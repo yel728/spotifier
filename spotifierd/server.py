@@ -30,6 +30,7 @@ class Application:
         self.spotify = SpotifyAPI(config, self.oauth)
         self.library = Library(self.spotify)
         self.playback = EventPlaybackState()
+        self.oauth.on_change = lambda: self.playback.apply({"PLAYER_EVENT": "service_changed"})
         self.librespot = LibrespotSupervisor(
             config, self.playback.apply, self.playback.snapshot,
             Path(config.player_cache).expanduser().parent / "playback.json",
@@ -73,10 +74,23 @@ class Application:
             "logged_in": logged_in,
             "library_logged_in": logged_in,
             "device_name": self.config.device_name,
-            "streaming_ready": bool(self.librespot.running and self.librespot.player_ready),
+            "streaming_ready": self.librespot.ready,
             "streaming_login_url": self.librespot.login_url,
         })
         return state
+
+    def auth_status(self) -> dict[str, Any]:
+        playback = self.librespot.ready
+        library = self.oauth.logged_in
+        if playback and library:
+            stage, message = "complete", "You can close this page and choose a song in Spotifier."
+        elif not playback and self.librespot.login_url:
+            stage, message = "playback", "First, authorize Spotify playback. Library access follows automatically."
+        elif not playback:
+            stage, message = "connecting", "Connecting the player. No additional sign-in is needed yet."
+        else:
+            stage, message = "library", "Playback is connected. Authorize library access next (Spotify calls this app ncspot)."
+        return {"stage": stage, "playback": playback, "library": library, "message": message}
 
     def logout(self) -> None:
         self.oauth.logout()
@@ -144,10 +158,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"ok": True, "version": "0.2.0"})
         if url.path == "/api/status":
             return self._json(app.status())
+        if url.path == "/api/auth/status":
+            return self._json(app.auth_status())
         if url.path == "/auth/login":
-            location = app.oauth.login_url()
+            return 200, Path(__file__).with_name("login.html").read_bytes(), "text/html; charset=utf-8"
+        if url.path == "/auth/authorize":
+            stage = app.auth_status()["stage"]
+            location = (app.librespot.login_url if stage == "playback"
+                        else app.oauth.login_url() if stage == "library" else "")
             if not location:
-                return self._text("Login is already complete. You can close this tab.\n")
+                location = "/auth/login"
             self.send_response(302)
             self.send_header("Location", location)
             self.end_headers()

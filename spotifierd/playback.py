@@ -212,6 +212,10 @@ class LibrespotSupervisor:
     def running(self) -> bool:
         return self.process is not None and self.process.poll() is None
 
+    @property
+    def ready(self) -> bool:
+        return self.running and self.player_ready and CONTROL_SOCKET_PATH.is_socket()
+
     def start(self) -> None:
         if not PLAYER_BINARY_PATH.is_file():
             raise RuntimeError(f"Spotifier player is not built: run cargo build --release in {PLAYER_BINARY_PATH.parent.parent.parent}")
@@ -227,6 +231,10 @@ class LibrespotSupervisor:
 
     def stop(self) -> None:
         self.stopping.set()
+        monitor_thread = self.monitor_thread
+        self.monitor_thread = None
+        if monitor_thread is not None and monitor_thread is not threading.current_thread():
+            monitor_thread.join(timeout=3)
         with self.load_lock:
             self._save_checkpoint()
             self.recovery = None
@@ -267,6 +275,8 @@ class LibrespotSupervisor:
     def request(self, value: str, timeout: float = 1.0) -> str:
         if not self.running:
             raise RuntimeError("Local Spotify player is not running")
+        if self.player_ready and not CONTROL_SOCKET_PATH.is_socket():
+            raise RuntimeError("Local Spotify player control channel is unavailable")
         chunks: list[bytes] = []
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as control:
             control.settimeout(timeout)
@@ -307,6 +317,8 @@ class LibrespotSupervisor:
     def load(self, track_uri: str, context_uri: str = "") -> None:
         if not self.running:
             raise RuntimeError("Local Spotify player is not running")
+        if self.player_ready and not CONTROL_SOCKET_PATH.is_socket():
+            raise RuntimeError("Local Spotify player control channel is unavailable")
         with self.load_lock:
             self.recovery = None
             self.load_generation += 1
@@ -454,6 +466,7 @@ class LibrespotSupervisor:
         command = [str(PLAYER_BINARY_PATH)]
         environment = dict(os.environ)
         environment.update({
+            "RUST_LOG": "info",
             "SPOTIFIER_DEVICE_NAME": self.config.device_name,
             "SPOTIFIER_CACHE": str(cache_path),
             "SPOTIFIER_CONTROL_SOCKET": str(CONTROL_SOCKET_PATH),
@@ -540,7 +553,10 @@ class LibrespotSupervisor:
             print(line)
             self.last_lines = (self.last_lines + [line])[-30:]
             if line.startswith("spotifier-player ready:") and process is self.process:
+                self.login_url = ""
                 self.player_ready = True
+                if self.event_callback is not None:
+                    self.event_callback({"PLAYER_EVENT": "service_changed"})
                 self._restore_playback()
             match = re.search(r"Browse to:\s*(https?://\S+)", line)
             if match:
@@ -554,11 +570,21 @@ class LibrespotSupervisor:
                 self._remember_playback()
                 if self.event_callback is not None:
                     self.event_callback({"PLAYER_EVENT": "player_reset"})
-                print("librespot exited; restarting in 3s", file=sys.stderr)
+                print(f"librespot exited with status {self.process.returncode}; restarting in 3s", file=sys.stderr)
                 if self.stopping.wait(3):
                     return
                 self._terminate_stale_process()
                 self._spawn()
+            elif self.player_ready and not CONTROL_SOCKET_PATH.is_socket():
+                # A second player can unlink the first player's socket during a
+                # credential reset. Treat an unreachable player as failed so a
+                # single fresh instance recreates the control channel.
+                self.player_ready = False
+                if self.event_callback is not None:
+                    self.event_callback({"PLAYER_EVENT": "player_reset"})
+                    self.event_callback({"PLAYER_EVENT": "service_changed"})
+                if self.process is not None:
+                    self.process.terminate()
             elif self.player_ready:
                 self._restore_playback()
 

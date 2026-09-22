@@ -9,7 +9,7 @@ import tomllib
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 TOKEN_URL = "https://accounts.spotify.com/api/token"
@@ -28,6 +28,7 @@ class SpotifyPlayerOAuth:
         self.process: subprocess.Popen[str] | None = None
         self.url = ""
         self.lock = threading.Lock()
+        self.on_change: Callable[[], None] | None = None
 
     @property
     def logged_in(self) -> bool:
@@ -53,7 +54,14 @@ class SpotifyPlayerOAuth:
                 self.close()
                 raise RuntimeError(f"spotify_player authentication failed: {line or 'no login URL'}")
             self.url = line.removeprefix(prefix).strip()
+            threading.Thread(target=self._watch_login, args=(self.process,),
+                             name="spotify-login", daemon=True).start()
             return self.url
+
+    def _watch_login(self, process: subprocess.Popen[str]) -> None:
+        process.wait()
+        if self.process is process and self.logged_in and self.on_change is not None:
+            self.on_change()
 
     def token(self) -> dict[str, Any] | None:
         if not self.token_path.exists():

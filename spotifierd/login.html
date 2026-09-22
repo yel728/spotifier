@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect Spotify · Spotifier</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#141819;color:#edf2ee}body{margin:0;padding:48px 20px}main{max-width:480px;margin:8vh auto;background:#202728;padding:32px;border-radius:20px}h1{font-size:28px;margin-top:0}p{line-height:1.6;color:#bdc9c2}ol{padding:0;list-style:none}li{padding:16px 0;border-bottom:1px solid #394540;display:flex;justify-content:space-between;gap:20px}li span{color:#9bddb6}button{background:#a2efbe;color:#12301e;border:0;border-radius:10px;padding:14px 20px;font:600 16px system-ui;cursor:pointer;width:100%;margin-top:20px}button:disabled{opacity:.5;cursor:wait}#message{min-height:52px}small{color:#a9b8b0}
+</style></head><body><main>
+<h1 id="heading">Connect Spotify</h1>
+<p>Spotifier needs permission for playback and your library. This page guides you through both and updates automatically.</p>
+<ol><li>1. Playback <span id="playback">Checking…</span></li><li>2. Library &amp; search <span id="library">Checking…</span></li></ol>
+<p id="message" role="status" aria-live="polite">Checking your connection…</p>
+<button id="continue" disabled>Continue with Spotify</button>
+<p><small>Keep this page open while you authorize Spotify in the other tab. Already connected steps are skipped.</small></p>
+</main><script>
+let current=null, authWindow=null, launchedStage=null, busy=false;
+const button=document.getElementById('continue');
+function launch(){
+ if(!current || !['playback','library'].includes(current.stage)) return;
+ authWindow=window.open('/auth/authorize','spotifier-authorization');
+ if(!authWindow){document.getElementById('message').textContent='Allow pop-ups for this page, then try again.';return;}
+ launchedStage=current.stage;
+ button.textContent='Reopen Spotify authorization';
+}
+button.addEventListener('click',launch);
+async function update(){
+ if(busy)return;busy=true;
+ try{
+  const response=await fetch('/api/auth/status',{cache:'no-store'});
+  if(!response.ok)throw new Error();
+  current=await response.json();
+  document.getElementById('playback').textContent=current.playback?'Connected':'Not connected';
+  document.getElementById('library').textContent=current.library?'Connected':'Not connected';
+  document.getElementById('message').textContent=current.message;
+  const complete=current.stage==='complete';
+  document.getElementById('heading').textContent=complete?'Spotify is connected':'Connect Spotify';
+  button.hidden=complete;
+  button.disabled=!['playback','library'].includes(current.stage);
+  if(complete){if(authWindow && !authWindow.closed)authWindow.close();launchedStage=null;}
+  else if(authWindow && !authWindow.closed && launchedStage && current.stage!==launchedStage && !button.disabled){
+   // Continue the second permission step in the existing authorization tab.
+   authWindow.location='/auth/authorize';launchedStage=current.stage;
+  }
+  button.textContent=button.disabled?'Connecting…':launchedStage===current.stage?'Reopen Spotify authorization':'Continue with Spotify';
+ }catch(error){document.getElementById('message').textContent='Spotifier is unavailable. Waiting to reconnect…';button.disabled=true;}
+ finally{busy=false;}
+}
+update();setInterval(update,1000);
+</script></body></html>

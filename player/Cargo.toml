@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.85"
 
 [dependencies]
-librespot = "=0.8.0"
+librespot = { version = "=0.8.0", default-features = false, features = ["native-tls", "pulseaudio-backend", "with-libmdns"] }
 librespot-oauth = { version = "=0.8.0", features = ["native-tls"] }
 futures-util = "0.3"
 log = "0.4"

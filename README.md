@@ -71,9 +71,15 @@ Playback status and track metadata come from the daemon's local event state.
 
 ## Spotify authorization
 
-No Spotify Developer Dashboard application is required. Open the panel and select the Spotify icon; Spotifier uses `spotify_player` to obtain an ncspot OAuth token for playback, search, and library API requests.
+Select **Connect Spotify** in the panel to open the setup page. It shows playback
+and library access separately, skips connected steps, and reuses one authorization
+tab to guide both permissions. Spotify labels the library authorization **ncspot**.
+The page reports completion only when both connections are ready, and the panel
+updates automatically. Reopening setup preserves the current login.
 
-Spotify labels this authorization as **ncspot**. The token is stored locally in `~/.cache/spotify-player/user_client_token.json` and removed by the panel logout control.
+Playback credentials are cached under `~/.cache/spotifier/librespot/`; the library
+token is stored in `~/.cache/spotify-player/user_client_token.json`. **Sign out**
+clears both. Browser pop-ups must be allowed for the setup page.
 
 ## Install
 
@@ -88,7 +94,7 @@ This single command:
 - places the widget in the bar;
 - restarts the Omarchy shell.
 
-Open `http://127.0.0.1:8765/auth/login` once to authorize Spotify.
+Open `http://127.0.0.1:8765/auth/login` to complete the guided Spotify setup.
 
 ## Service management
 

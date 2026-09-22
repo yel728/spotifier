@@ -45,6 +45,26 @@ class SpotifyPlayerOAuthTests(unittest.TestCase):
 
             self.assertEqual(SpotifyPlayerOAuth(token).token()["access_token"], "token")
 
+    def test_completed_login_notifies_widget(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            token = Path(directory) / "token.json"
+            oauth = SpotifyPlayerOAuth(token)
+            process = Mock()
+            process.wait.side_effect = lambda: token.write_text("{}")
+            oauth.process = process
+            oauth.on_change = Mock()
+            oauth._watch_login(process)
+            oauth.on_change.assert_called_once_with()
+
+    def test_cancelled_login_does_not_notify_success(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            oauth = SpotifyPlayerOAuth(Path(directory) / "token.json")
+            process = Mock()
+            oauth.process = process
+            oauth.on_change = Mock()
+            oauth._watch_login(process)
+            oauth.on_change.assert_not_called()
+
     def test_logout_removes_oauth_token(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             token = Path(directory) / "user_client_token.json"

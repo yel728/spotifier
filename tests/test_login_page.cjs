@@ -1,0 +1,28 @@
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const vm=require('node:vm');
+const script=fs.readFileSync('spotifierd/login.html','utf8').match(/<script>([\s\S]*?)<\/script>/)[1];
+const elements={};
+for(const id of ['continue','message','heading','playback','library']) elements[id]={textContent:'',disabled:true,hidden:false,addEventListener:(event,fn)=>{elements[id].click=fn}};
+let status={stage:'playback',playback:false,library:false,message:'Connect playback'};
+let popup={closed:false,location:'',close(){this.closed=true}};
+let blocked=false,offline=false,opens=0;
+const context={document:{getElementById:id=>elements[id]},window:{open:()=>{opens++;return blocked?null:popup}},fetch:async()=>{if(offline)throw Error();return {ok:true,json:async()=>status}},setInterval:()=>{}};
+vm.createContext(context);
+vm.runInContext(script,context);
+const tick=async()=>{await new Promise(setImmediate);await vm.runInContext('update()',context)};
+(async()=>{
+ await tick();assert.equal(elements.continue.disabled,false);
+ elements.continue.click();assert.equal(opens,1);
+ status={stage:'library',playback:true,library:false,message:'Connect library'};
+ await tick();assert.equal(popup.location,'/auth/authorize');assert.equal(opens,1);
+ assert.equal(elements.heading.textContent,'Connect Spotify');
+ status={stage:'complete',playback:true,library:true,message:'Choose a song'};
+ await tick();assert.equal(elements.continue.hidden,true);assert.equal(popup.closed,true);
+ status={stage:'connecting',playback:false,library:true,message:'Connecting player'};
+ await tick();assert.equal(elements.continue.hidden,false);assert.equal(elements.continue.disabled,true);
+ status={stage:'library',playback:true,library:false,message:'Connect library'};
+ blocked=true;await tick();elements.continue.click();assert.match(elements.message.textContent,/Allow pop-ups/);
+ offline=true;await tick();assert.equal(elements.continue.disabled,true);assert.match(elements.message.textContent,/unavailable/);
+ console.log('Login page: sequential authorization, popup reuse, completion, reconnect, blocked popup and offline states PASS');
+})().catch(e=>{console.error(e);process.exitCode=1});

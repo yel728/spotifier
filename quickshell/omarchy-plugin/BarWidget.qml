@@ -647,13 +647,14 @@ BarWidget {
           }
 
           Item {
-            width: visible ? Style.space(24) : 0
+            width: visible ? loginLabel.implicitWidth + Style.space(12) : 0
             height: Style.space(22)
-            visible: !root.spotifier || !root.spotifier.loggedIn || !root.spotifier.libraryLoggedIn
+            visible: !root.spotifier || !root.spotifier.loggedIn || !root.spotifier.libraryLoggedIn || !root.spotifier.streamingReady
 
             Text {
               anchors.centerIn: parent
-              text: "󰓇"
+              id: loginLabel
+              text: "Connect Spotify"
               color: root.bar.foreground
               font.family: root.bar.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -667,13 +668,14 @@ BarWidget {
           }
 
           Item {
-            width: visible ? Style.space(24) : 0
+            width: visible ? logoutLabel.implicitWidth + Style.space(12) : 0
             height: Style.space(22)
             visible: !!(root.spotifier && (root.spotifier.loggedIn || root.spotifier.libraryLoggedIn))
 
             Text {
               anchors.centerIn: parent
-              text: "󰍃"
+              id: logoutLabel
+              text: "Sign out"
               color: root.bar.foreground
               font.family: root.bar.fontFamily
               font.pixelSize: Style.font.bodySmall

@@ -376,6 +376,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         connect_config.initial_volume = volume;
     }
 
+    let credentials = match cache.credentials() {
+        Some(credentials) => credentials,
+        None => oauth_credentials(&session_config.client_id)?,
+    };
+
     let backend = audio_backend::find(None).ok_or("no audio backend")?;
     let mixer_builder = mixer::find(Some("softvol")).ok_or("softvol mixer unavailable")?;
     let mixer = mixer_builder(MixerConfig::default())?;
@@ -391,10 +396,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let events = player.get_player_event_channel();
 
-    let credentials = match cache.credentials() {
-        Some(credentials) => credentials,
-        None => oauth_credentials(&session_config.client_id)?,
-    };
     let discovery_backend = librespot::discovery::find(None)?;
     let mut discovery = Discovery::builder(
         session_config.device_id.clone(),
@@ -467,10 +468,12 @@ async fn wait_for_disconnect(session: &Session) {
 }
 
 fn oauth_credentials(client_id: &str) -> Result<Credentials, Box<dyn std::error::Error>> {
-    let client =
-        OAuthClientBuilder::new(client_id, "http://127.0.0.1/login", OAUTH_SCOPES.to_vec())
-            .open_in_browser()
-            .build()?;
+    let client = OAuthClientBuilder::new(
+        client_id,
+        "http://127.0.0.1:8890/login",
+        OAUTH_SCOPES.to_vec(),
+    )
+    .build()?;
     let token = client.get_access_token()?;
     Ok(Credentials::with_access_token(token.access_token))
 }

@@ -34,6 +34,49 @@ class DaemonLifecycleTests(unittest.TestCase):
         process.wait.assert_called_once_with(timeout=3)
         self.assertIsNone(daemon.process)
 
+    def test_stop_waits_for_monitor_before_service_can_restart(self) -> None:
+        daemon = LibrespotSupervisor(Config())
+        monitor = Mock()
+        daemon.monitor_thread = monitor
+
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            with (
+                patch("spotifierd.playback.LIBRESPOT_PID_PATH", runtime / "player.pid"),
+                patch("spotifierd.playback.EVENT_SOCKET_PATH", runtime / "events.sock"),
+                patch("spotifierd.playback.CONTROL_SOCKET_PATH", runtime / "control.sock"),
+            ):
+                daemon.stop()
+
+        monitor.join.assert_called_once_with(timeout=3)
+        self.assertIsNone(daemon.monitor_thread)
+
+    def test_ready_requires_live_process_and_control_socket(self) -> None:
+        daemon = LibrespotSupervisor(Config())
+        daemon.process = Mock()
+        daemon.process.poll.return_value = None
+        daemon.player_ready = True
+
+        with patch("spotifierd.playback.CONTROL_SOCKET_PATH") as control_socket:
+            control_socket.is_socket.return_value = False
+            self.assertFalse(daemon.ready)
+            control_socket.is_socket.return_value = True
+            self.assertTrue(daemon.ready)
+
+    def test_monitor_terminates_unreachable_ready_player(self) -> None:
+        daemon = LibrespotSupervisor(Config())
+        daemon.process = Mock()
+        daemon.process.poll.return_value = None
+        daemon.player_ready = True
+        daemon.stopping.wait = Mock(side_effect=[False, True])
+
+        with patch("spotifierd.playback.CONTROL_SOCKET_PATH") as control_socket:
+            control_socket.is_socket.return_value = False
+            daemon._monitor()
+
+        daemon.process.terminate.assert_called_once_with()
+        self.assertFalse(daemon.player_ready)
+
     def test_reset_credentials_restarts_without_cached_login(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             cache = Path(directory)
